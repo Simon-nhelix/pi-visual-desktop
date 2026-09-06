@@ -1,12 +1,25 @@
 {
   "name": "pi-visual-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local visual-first macOS desktop primitives for Pi",
   "type": "module",
-  "keywords": ["pi-package"],
-  "engines": { "node": ">=24" },
-  "pi": { "extensions": ["./src/index.ts"] },
-  "files": ["src", "native", "scripts", "README.md"],
+  "keywords": [
+    "pi-package"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "native",
+    "scripts",
+    "README.md"
+  ],
   "scripts": {
     "setup": "node scripts/build.mjs",
     "check": "tsc --noEmit",
