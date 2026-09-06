@@ -104,7 +104,7 @@ ref는 캡처 시작 시각부터 **120초**, 최신 한 장만 유효하며 한
 각 Mac의 **개발 체크아웃**에서 최초 한 번:
 
 ```sh
-git clone <repository-url> ~/Projects/pi-visual-desktop
+git clone git@github.com:Simon-nhelix/pi-visual-desktop.git ~/Projects/pi-visual-desktop
 cd ~/Projects/pi-visual-desktop
 git switch main
 git pull --ff-only
