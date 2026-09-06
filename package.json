@@ -1,6 +1,6 @@
 {
   "name": "pi-visual-desktop",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Local visual-first macOS desktop primitives for Pi",
   "type": "module",
   "keywords": [
@@ -17,6 +17,7 @@
   "files": [
     "src",
     "native",
+    "test/manual",
     "scripts",
     "README.md"
   ],
@@ -24,6 +25,7 @@
     "setup": "node scripts/build.mjs",
     "check": "tsc --noEmit",
     "test": "node --test test/*.test.ts",
+    "build:fixture": "node scripts/build-fixture.mjs",
     "test:native": "build/desktop-helper --self-test",
     "health": "build/desktop-helper --health"
   },

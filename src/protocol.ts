@@ -10,9 +10,22 @@ export const KEY_NAMES = [
   'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12',
   'minus', 'equal', 'left_bracket', 'right_bracket', 'backslash', 'semicolon', 'quote', 'comma', 'period', 'slash', 'grave',
 ] as const;
+export const observeSchema = Type.Object({
+  zoom: Type.Optional(Type.Object({
+    ref: Type.String({ minLength: 1, maxLength: 80 }),
+    x: Type.Integer({ minimum: 0, maximum: MAX_EDGE - 1 }),
+    y: Type.Integer({ minimum: 0, maximum: MAX_EDGE - 1 }),
+    width: Type.Integer({ minimum: 1, maximum: MAX_EDGE }),
+    height: Type.Integer({ minimum: 1, maximum: MAX_EDGE }),
+  }, { additionalProperties: false })),
+  waitMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 2000 })),
+}, { additionalProperties: false });
+export type Observe = Static<typeof observeSchema>;
+/** Display-local logical points, separate from full-display preflight geometry. */
+export interface CaptureView { x: number; y: number; width: number; height: number }
 export const actionSchema = Type.Object({
   ref: Type.String({ minLength: 1, maxLength: 80 }),
-  action: StringEnum(['click', 'double_click', 'right_click', 'scroll', 'drag', 'type', 'key']),
+  action: StringEnum(['move', 'click', 'double_click', 'right_click', 'scroll', 'drag', 'type', 'key']),
   x: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_EDGE - 1 })),
   y: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_EDGE - 1 })),
   toX: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_EDGE - 1 })),
@@ -31,7 +44,7 @@ export interface Geometry {
 }
 export interface Frame {
   ref: string; capturedAt: number; width: number; height: number;
-  geometry: Geometry; png: string;
+  geometry: Geometry; view: CaptureView; png: string;
 }
 export interface Health { screenRecording: boolean; accessibility: boolean; secureInput: boolean }
 export interface Reply { ok: boolean; error?: string; outcome?: string; health?: Health; frame?: Frame }
@@ -40,7 +53,7 @@ export interface Transport {
   close(): Promise<void>;
 }
 const fields: Record<Action['action'], string[]> = {
-  click: ['x', 'y'], double_click: ['x', 'y'], right_click: ['x', 'y'],
+  move: ['x', 'y'], click: ['x', 'y'], double_click: ['x', 'y'], right_click: ['x', 'y'],
   scroll: ['x', 'y', 'dx', 'dy'], drag: ['x', 'y', 'toX', 'toY'],
   type: ['text'], key: ['key', 'modifiers'],
 };
@@ -65,10 +78,10 @@ export function validateAction(value: unknown, width: number, height: number): a
 }
 
 /** Integer image pixel indices map to the pixel center in Quartz global points (top-left origin). */
-export function imageToDisplay(x: number, y: number, frame: Pick<Frame, 'width' | 'height' | 'geometry'>) {
+export function imageToDisplay(x: number, y: number, frame: Pick<Frame, 'width' | 'height' | 'geometry' | 'view'>) {
   if (!integer(x, 0, frame.width - 1) || !integer(y, 0, frame.height - 1)) throw new Error('Coordinate outside screenshot.');
-  return { x: frame.geometry.x + (x + 0.5) * frame.geometry.width / frame.width,
-    y: frame.geometry.y + (y + 0.5) * frame.geometry.height / frame.height };
+  return { x: frame.geometry.x + frame.view.x + (x + 0.5) * frame.view.width / frame.width,
+    y: frame.geometry.y + frame.view.y + (y + 0.5) * frame.view.height / frame.height };
 }
 
 export function validateFrame(value: unknown): asserts value is Frame {
@@ -83,4 +96,38 @@ export function validateFrame(value: unknown): asserts value is Frame {
   if (!g || ['displayID', 'x', 'y', 'width', 'height', 'pixelWidth', 'pixelHeight', 'rotation', 'pid', 'launched']
     .some(k => !Number.isFinite(g[k as keyof Geometry])) || typeof g.bundle !== 'string' ||
     g.width <= 0 || g.height <= 0 || g.pixelWidth <= 0 || g.pixelHeight <= 0 || g.pid <= 0) throw new Error('Invalid helper geometry.');
+  const v = f.view;
+  if (!v || [v.x, v.y, v.width, v.height].some(n => !Number.isFinite(n)) || v.x < 0 || v.y < 0 ||
+    v.width <= 0 || v.height <= 0 || v.x + v.width > g.width + 1e-7 || v.y + v.height > g.height + 1e-7 ||
+    f.width > captureSize(g, v).width || f.height > captureSize(g, v).height) throw new Error('Invalid helper capture view.');
+}
+
+export function validateObserve(value: unknown): asserts value is Observe {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid observe fields.');
+  const o = value as Record<string, unknown>;
+  if (Object.keys(o).some(k => !['zoom', 'waitMs'].includes(k)) ||
+    ('waitMs' in o && !integer(o.waitMs, 0, 2000))) throw new Error('Invalid observe fields or waitMs (0..2000).');
+  if ('zoom' in o) {
+    const z = o.zoom as Record<string, unknown>;
+    if (!z || typeof z !== 'object' || Array.isArray(z) || Object.keys(z).sort().join(',') !== 'height,ref,width,x,y' ||
+      typeof z.ref !== 'string' || z.ref.length < 1 || z.ref.length > 80 ||
+      !integer(z.x, 0, MAX_EDGE - 1) || !integer(z.y, 0, MAX_EDGE - 1) ||
+      !integer(z.width, 1, MAX_EDGE) || !integer(z.height, 1, MAX_EDGE)) throw new Error('Invalid zoom selection.');
+  }
+}
+
+/** Selection uses pixel edges (not action pixel centers); nested views compose directly. */
+export function zoomView(z: NonNullable<Observe['zoom']>, f: Pick<Frame, 'ref' | 'width' | 'height' | 'view'>): CaptureView {
+  validateObserve({ zoom: z });
+  if (z.ref !== f.ref || z.x + z.width > f.width || z.y + z.height > f.height) throw new Error('Invalid zoom region or foreign ref.');
+  return { x: f.view.x + z.x * f.view.width / f.width, y: f.view.y + z.y * f.view.height / f.height,
+    width: z.width * f.view.width / f.width, height: z.height * f.view.height / f.height };
+}
+
+export function captureSize(g: Geometry, v: CaptureView) {
+  // Sorted axes account for display modes whose native dimensions are unrotated.
+  const nativeScale = Math.min(Math.max(g.pixelWidth, g.pixelHeight) / Math.max(g.width, g.height),
+    Math.min(g.pixelWidth, g.pixelHeight) / Math.min(g.width, g.height));
+  const scale = Math.min(nativeScale, MAX_EDGE / Math.max(v.width, v.height));
+  return { width: Math.floor(v.width * scale), height: Math.floor(v.height * scale) };
 }

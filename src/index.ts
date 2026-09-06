@@ -1,12 +1,11 @@
 import { getAgentDir, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { Type } from 'typebox';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DesktopController } from './controller.ts';
-import { actionSchema } from './protocol.ts';
+import { actionSchema, observeSchema } from './protocol.ts';
 import { HelperTransport } from './transport.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -84,17 +83,16 @@ export function registerDesktop(pi: ExtensionAPI, controller: DesktopController,
   });
   pi.registerTool({
     name: 'desktop_observe', label: 'Desktop observe',
-    description: 'Observe whole main display (PNG, longest edge <=1280). Returns timestamp, dimensions, one-use ref expiring after 120s. Requires enabled desktop (user autoEnable setting or /desktop on). No AX/DOM/OCR.',
-    parameters: Type.Object({}, { additionalProperties: false }),
+    description: 'Observe a NEW main-display PNG (edge <=1280, never upscaled). Optional zoom:{ref,x,y,width,height} selects pixel edges in the latest image; nested zoom supported. Returned image coordinates map directly to input. {} resets full screen. Optional waitMs:0..2000 is an explicit cancellable wait before capture. Returns timestamp, dimensions, one-use ref expiring after 120s. Requires enabled desktop (user autoEnable setting or /desktop on). No AX/DOM/OCR.',
+    parameters: observeSchema,
     async execute(_id, params, signal, _update, ctx) {
       if (ctx.mode !== 'tui' || !ctx.model?.input.includes('image')) throw new Error('Desktop requires local TUI and a vision-capable Pi model.');
-      if (Object.keys(params).length) throw new Error('desktop_observe accepts no arguments.');
-      return controller.observe(signal);
+      return controller.observe(params, signal);
     },
   });
   pi.registerTool({
     name: 'desktop_act', label: 'Desktop act',
-    description: 'One foreground primitive then 250ms settle and screenshot; dispatched is NOT verified success. Use latest ref and integer pixels in that exact image (top-left 0,0). Mouse actions require x,y; drag also toX,toY; scroll also dx,dy (pixels, positive right/down). type requires literal text, no clipboard. key requires a named physical key (e.g. return, tab, escape, left, a) and explicit modifiers array (may be empty); use type for literal Unicode, not key sequences. Only action-specific fields allowed. Never retry unknown outcomes.',
+    description: 'One foreground primitive then 250ms settle and full-screen screenshot; dispatched is NOT verified success. Use latest ref and integer pixels in that exact image (top-left 0,0). move is one no-button hover event with x,y only. Mouse actions require x,y; drag also toX,toY; scroll also dx,dy (pixels, positive right/down). type requires literal text, no clipboard. key requires a named physical key (e.g. return, tab, escape, left, a) and explicit modifiers array (may be empty); use type for literal Unicode, not key sequences. Only action-specific fields allowed. Never retry unknown outcomes.',
     parameters: actionSchema,
     async execute(_id, params, signal, _update, ctx) {
       if (ctx.mode !== 'tui' || !ctx.model?.input.includes('image')) throw new Error('Desktop requires local TUI and a vision-capable Pi model.');

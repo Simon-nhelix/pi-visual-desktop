@@ -34,15 +34,22 @@ private struct Geometry: Codable, Equatable {
     let bundle: String
     let launched: Double
 }
+// ScreenCaptureKit sourceRect: display-local logical points, never global Quartz origin.
+private struct CaptureView: Codable, Equatable {
+    let x: Double, y: Double, width: Double, height: Double
+    static func full(_ g: Geometry) -> CaptureView { CaptureView(x: 0, y: 0, width: g.width, height: g.height) }
+}
 private struct Frame: Codable {
     let ref: String
     let capturedAt: Double
     let width: Int, height: Int
     let geometry: Geometry
+    let view: CaptureView
     let png: String
 }
 private struct Snapshot {
     let ref: String, capturedAt: Double, width: Int, height: Int, geometry: Geometry
+    let view: CaptureView
 }
 private struct Health: Codable {
     let screenRecording: Bool, accessibility: Bool, secureInput: Bool
@@ -66,23 +73,43 @@ private func health() -> Health {
                     pixelWidth: mode.pixelWidth, pixelHeight: mode.pixelHeight, rotation: CGDisplayRotation(id),
                     pid: app.processIdentifier, bundle: app.bundleIdentifier ?? "", launched: launched.timeIntervalSince1970)
 }
-private func imageSize(_ g: Geometry) -> (Int, Int) {
-    // Quartz bounds define the displayed orientation, including rotated displays.
-    let scale = min(Double(maxEdge), Double(max(g.pixelWidth, g.pixelHeight))) / max(g.width, g.height)
-    return (max(1, Int((g.width * scale).rounded(.down))), max(1, Int((g.height * scale).rounded(.down))))
+private func imageSize(_ g: Geometry, _ view: CaptureView? = nil) -> (Int, Int) {
+    let v = view ?? .full(g)
+    // Native mode axes may be unrotated; Quartz bounds define displayed orientation.
+    let nativeScale = min(Double(max(g.pixelWidth, g.pixelHeight)) / max(g.width, g.height),
+                          Double(min(g.pixelWidth, g.pixelHeight)) / min(g.width, g.height))
+    let scale = min(nativeScale, Double(maxEdge) / max(v.width, v.height))
+    return (Int((v.width * scale).rounded(.down)), Int((v.height * scale).rounded(.down)))
 }
-private func captureConfiguration(_ g: Geometry) -> SCStreamConfiguration {
-    let (width, height) = imageSize(g)
+private func captureConfiguration(_ g: Geometry, _ view: CaptureView? = nil) -> SCStreamConfiguration {
+    let v = view ?? .full(g)
+    let (width, height) = imageSize(g, v)
     let config = SCStreamConfiguration()
     config.width = width; config.height = height
+    // SCStream.h sourceRect is in points in the display's logical coordinate system.
+    config.sourceRect = CGRect(x: v.x, y: v.y, width: v.width, height: v.height)
     // Match point()'s independent-axis scaling after integer dimension rounding.
     config.preservesAspectRatio = false
     config.showsCursor = true
     return config
 }
 private func point(_ x: Double, _ y: Double, _ s: Snapshot) -> CGPoint {
-    CGPoint(x: s.geometry.x + (x + 0.5) * s.geometry.width / Double(s.width),
-            y: s.geometry.y + (y + 0.5) * s.geometry.height / Double(s.height))
+    CGPoint(x: s.geometry.x + s.view.x + (x + 0.5) * s.view.width / Double(s.width),
+            y: s.geometry.y + s.view.y + (y + 0.5) * s.view.height / Double(s.height))
+}
+private func zoomView(_ z: [String: Any], _ s: Snapshot) throws -> CaptureView {
+    try require(Set(z.keys) == ["ref", "x", "y", "width", "height"] && z["ref"] as? String == s.ref,
+                "Invalid zoom fields or foreign screenshot ref.")
+    let x = try number(z, "x", 0, Double(s.width - 1)), y = try number(z, "y", 0, Double(s.height - 1))
+    let width = try number(z, "width", 1, Double(s.width)), height = try number(z, "height", 1, Double(s.height))
+    try require(x + width <= Double(s.width) && y + height <= Double(s.height), "Zoom region outside screenshot.")
+    // Pixel-edge selection; repeated zoom is the same affine composition, not PNG resampling.
+    let v = CaptureView(x: s.view.x + x * s.view.width / Double(s.width),
+                        y: s.view.y + y * s.view.height / Double(s.height),
+                        width: width * s.view.width / Double(s.width), height: height * s.view.height / Double(s.height))
+    let (w, h) = imageSize(s.geometry, v)
+    try require(w >= 1 && h >= 1, "Zoom region smaller than a native pixel.")
+    return v
 }
 
 // A bounded, testable event plan. No input is posted while validating/building a plan.
@@ -133,7 +160,7 @@ private let keyCodes: [String: UInt16] = [
 private func buildPlan(_ a: [String: Any], _ s: Snapshot) throws -> [InputEvent] {
     guard let action = a["action"] as? String, let ref = a["ref"] as? String else { throw Failure(message: "Missing action or ref.") }
     let fields: [String: Set<String>] = [
-        "click": ["x", "y"], "double_click": ["x", "y"], "right_click": ["x", "y"],
+        "move": ["x", "y"], "click": ["x", "y"], "double_click": ["x", "y"], "right_click": ["x", "y"],
         "drag": ["x", "y", "toX", "toY"], "scroll": ["x", "y", "dx", "dy"],
         "type": ["text"], "key": ["key", "modifiers"]
     ]
@@ -144,6 +171,8 @@ private func buildPlan(_ a: [String: Any], _ s: Snapshot) throws -> [InputEvent]
         p = point(try number(a, "x", 0, Double(s.width - 1)), try number(a, "y", 0, Double(s.height - 1)), s)
     }
     switch action {
+    case "move":
+        return [InputEvent(kind: "move", point: p, count: 0)]
     case "click", "double_click", "right_click":
         let button = action == "right_click" ? "right" : "left"
         var events: [InputEvent] = []
@@ -246,23 +275,28 @@ private func validateSnapshot(_ s: Snapshot, current: Geometry, now: Double) thr
 
 @MainActor private final class Desktop {
     var snapshot: Snapshot?
-    func capture() async throws -> Frame {
+    func capture(source: Snapshot? = nil, view: CaptureView? = nil) async throws -> Frame {
         snapshot = nil
         try checkCancellation()
         try require(CGPreflightScreenCaptureAccess(), "Screen Recording permission missing. Enable it manually in System Settings > Privacy & Security, then restart Pi.")
         let before = try geometry(), capturedAt = Date().timeIntervalSince1970 * 1000
+        if let source { try validateSnapshot(source, current: before, now: capturedAt) }
+        let v = view ?? .full(before)
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first(where: { $0.displayID == before.displayID }) else { throw Failure(message: "Main display unavailable to ScreenCaptureKit.") }
-        let config = captureConfiguration(before)
+        let config = captureConfiguration(before, v)
         let width = config.width, height = config.height
         let filter = SCContentFilter(display: display, excludingWindows: [])
+        if let source { try validateSnapshot(source, current: geometry(), now: Date().timeIntervalSince1970 * 1000) }
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
         try checkCancellation()
         try require(try geometry() == before, "Display or foreground changed during capture. Observe again.")
+        if let source { try validateSnapshot(source, current: before, now: Date().timeIntervalSince1970 * 1000) }
         try require(image.width == width && image.height == height, "Capture dimensions differ from configured image; refusing coordinates.")
         guard let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { throw Failure(message: "PNG encoding failed.") }
-        let frame = Frame(ref: UUID().uuidString, capturedAt: capturedAt, width: width, height: height, geometry: before, png: data.base64EncodedString())
-        snapshot = Snapshot(ref: frame.ref, capturedAt: capturedAt, width: width, height: height, geometry: before)
+        if let source { try validateSnapshot(source, current: geometry(), now: Date().timeIntervalSince1970 * 1000) }
+        let frame = Frame(ref: UUID().uuidString, capturedAt: capturedAt, width: width, height: height, geometry: before, view: v, png: data.base64EncodedString())
+        snapshot = Snapshot(ref: frame.ref, capturedAt: capturedAt, width: width, height: height, geometry: before, view: v)
         return frame
     }
     func handle(_ request: [String: Any]) async -> Reply {
@@ -274,7 +308,16 @@ private func validateSnapshot(_ s: Snapshot, current: Geometry, now: Double) thr
                 try require(Set(request.keys) == ["op"], "Invalid health fields.")
                 return Reply(ok: true, health: health())
             case "observe":
-                try require(Set(request.keys) == ["op"], "Invalid observe fields.")
+                try require(Set(request.keys).isSubset(of: ["op", "zoom"]), "Invalid observe fields.")
+                if request.keys.contains("zoom") {
+                    guard let z = request["zoom"] as? [String: Any], let source = snapshot else {
+                        throw Failure(message: "No fresh screenshot ref or invalid zoom selection.")
+                    }
+                    snapshot = nil
+                    try validateSnapshot(source, current: geometry(), now: Date().timeIntervalSince1970 * 1000)
+                    let view = try zoomView(z, source)
+                    return Reply(ok: true, frame: try await capture(source: source, view: view))
+                }
                 return Reply(ok: true, frame: try await capture())
             case "act":
                 guard let s = snapshot else { throw Failure(message: "No fresh screenshot ref. Observe first.") }
@@ -386,7 +429,7 @@ private func selfTest() throws {
     try require(chmod(lockPath, 0o666) == 0, "Test lock permissions")
     try expectRejected { let fd = try acquireLock(path: lockPath); close(fd) }
     let g = Geometry(displayID: 1, x: -100, y: 20, width: 1440, height: 900, pixelWidth: 2880, pixelHeight: 1800, rotation: 0, pid: 1, bundle: "test", launched: 1)
-    let s = Snapshot(ref: "test", capturedAt: 0, width: 1280, height: 800, geometry: g)
+    let s = Snapshot(ref: "test", capturedAt: 0, width: 1280, height: 800, geometry: g, view: .full(g))
     try validateSnapshot(s, current: g, now: ttl - 1)
     for age in [-1, ttl, ttl + 1] { try expectRejected { try validateSnapshot(s, current: g, now: age) } }
     let encoded = try JSONEncoder().encode(g)
@@ -404,12 +447,57 @@ private func selfTest() throws {
     let config = captureConfiguration(fractional)
     try require(config.width == 1280 && config.height == 831, "Non-integral resize dimensions")
     try require(!config.preservesAspectRatio, "Capture must fill independently rounded dimensions without padding")
-    let resized = Snapshot(ref: "test", capturedAt: 0, width: config.width, height: config.height, geometry: fractional)
+    let resized = Snapshot(ref: "test", capturedAt: 0, width: config.width, height: config.height, geometry: fractional, view: .full(fractional))
     for (x, y) in [(0.0, 0.0), (639.0, 415.0), (1279.0, 830.0)] {
         let mapped = point(x, y, resized)
         try require(abs(mapped.x - (x + 0.5) * 1512 / 1280) < 1e-10 &&
                     abs(mapped.y - (y + 0.5) * 982 / 831) < 1e-10, "Independent-axis pixel centers after non-integral resize")
     }
+    // These are configuration/math/event-construction tests only; never capture or post.
+    for g in [g, portrait, fractional] {
+        let (w, h) = imageSize(g)
+        let full = Snapshot(ref: "zoom-source", capturedAt: 0, width: w, height: h, geometry: g, view: .full(g))
+        let selection: [String: Any] = ["ref": full.ref, "x": 100, "y": 50, "width": 300, "height": 200]
+        let v = try zoomView(selection, full)
+        let config = captureConfiguration(g, v)
+        try require(config.sourceRect == CGRect(x: 100 * g.width / Double(w), y: 50 * g.height / Double(h),
+                                                width: 300 * g.width / Double(w), height: 200 * g.height / Double(h)), "Display-local sourceRect uses source image edges")
+        try require(!config.preservesAspectRatio && config.width > 300 && config.height > 200, "New capture detail without padding")
+        let crop = Snapshot(ref: "nested-source", capturedAt: 0, width: config.width, height: config.height, geometry: g, view: v)
+        let nested = try zoomView(["ref": crop.ref, "x": 3, "y": 7, "width": 20, "height": 30], crop)
+        let (nw, nh) = imageSize(g, nested)
+        let n = Snapshot(ref: "nested", capturedAt: 0, width: nw, height: nh, geometry: g, view: nested)
+        let p = point(Double(nw - 1), Double(nh - 1), n)
+        try require(abs(p.x - (g.x + v.x + (3 + (Double(nw) - 0.5) * 20 / Double(nw)) * v.width / Double(crop.width))) < 1e-9,
+                    "Nested x composition includes nonzero global origin exactly once")
+        try require(abs(p.y - (g.y + v.y + (7 + (Double(nh) - 0.5) * 30 / Double(nh)) * v.height / Double(crop.height))) < 1e-9,
+                    "Nested y composition after fractional rounding")
+        let nativeScale = min(Double(max(g.pixelWidth, g.pixelHeight)) / max(g.width, g.height),
+                              Double(min(g.pixelWidth, g.pixelHeight)) / min(g.width, g.height))
+        try require(Double(nw) <= nested.width * nativeScale && Double(nh) <= nested.height * nativeScale &&
+                    max(config.width, config.height) <= maxEdge, "Output never exceeds native resolution or edge limit")
+        try expectRejected { try validateSnapshot(crop, current: g, now: ttl) }
+        for key in ["x", "y", "width", "height"] {
+            for bad: Any in [-1, Double.nan, Double.infinity, true, 0.5, 1281] {
+                var z = selection; z[key] = bad
+                try expectRejected { _ = try zoomView(z, full) }
+            }
+        }
+        for z: [String: Any] in [
+            ["ref": "foreign", "x": 0, "y": 0, "width": 1, "height": 1],
+            ["ref": full.ref, "x": 1, "y": 0, "width": w, "height": h],
+            ["ref": full.ref, "x": 0, "y": 0, "width": 0, "height": 1],
+            ["ref": full.ref, "x": 0, "y": 0, "width": 1, "height": 1, "extra": true]
+        ] { try expectRejected { _ = try zoomView(z, full) } }
+    }
+    let move = try plan(["op": "act", "action": "move", "ref": s.ref, "x": 4, "y": 9], s)
+    try require(move.count == 1 && move[0].kind == "move" && move[0].point == point(4, 9, s) &&
+                move[0].release == nil && move[0].emergencyRelease == nil && move[0].count == 0, "Hover is one no-button event, no held input")
+    guard let eventSource = CGEventSource(stateID: .privateState) else { throw Failure(message: "Test event allocation failed") }
+    let hoverEvent = try cgEvent(move[0], source: eventSource)
+    try require(hoverEvent.type == .mouseMoved && hoverEvent.flags.isEmpty &&
+                hoverEvent.getIntegerValueField(.mouseEventClickState) == 0, "Native hover construction never creates down/up")
+    try expectRejected { _ = try plan(["op": "act", "action": "move", "ref": s.ref, "x": 0, "y": 0, "button": "left"], s) }
     let drag = try plan(["op": "act", "action": "drag", "ref": "test", "x": 0, "y": 0, "toX": 1279, "toY": 799], s)
     try require(drag.count == 22, "Bounded drag")
     for cut in 0...drag.count {
@@ -452,7 +540,7 @@ private func selfTest() throws {
     try require(emitted.map { $0.kind } == ["leftDown", "leftUp"], "Wait cancellation release")
     let text = try plan(["op": "act", "action": "type", "ref": "test", "text": "한😀"], s)
     try require(text.count == 4 && text[2].unicode.count == 2, "Unicode surrogate pair preserved")
-    for action in ["click", "double_click", "right_click", "scroll", "type"] {
+    for action in ["move", "click", "double_click", "right_click", "scroll", "type"] {
         var request: [String: Any] = ["op": "act", "action": action, "ref": "test"]
         if action == "type" { request["text"] = "한😀" }
         else { request["x"] = 0; request["y"] = 0 }

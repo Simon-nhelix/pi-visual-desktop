@@ -1,4 +1,5 @@
-import { REF_TTL_MS, validateAction, validateFrame, type Frame, type Health, type Transport } from './protocol.ts';
+import { setTimeout as delay } from 'node:timers/promises';
+import { REF_TTL_MS, validateAction, validateFrame, validateObserve, zoomView, type Frame, type CaptureView, type Geometry, type Health, type Transport } from './protocol.ts';
 
 export function imageResult(frame: Frame, dispatched: boolean) {
   const { png: _png, ...snapshot } = frame;
@@ -38,9 +39,14 @@ export class DesktopController {
         const reply = await transport.request({ op: 'health' });
         if (!reply.ok) throw new Error(reply.error ?? 'Desktop helper refused session.');
         const health = reply.health;
-        if (!health || health.screenRecording !== true || health.accessibility !== true || health.secureInput !== false) {
-          throw new Error('Desktop unavailable: enable Screen Recording and Accessibility for the local terminal/helper in System Settings > Privacy & Security, then restart Pi. Disable Secure Input manually if active. No permission prompt was requested.');
+        if (!health || ['screenRecording', 'accessibility', 'secureInput'].some(k => typeof health[k as keyof Health] !== 'boolean')) {
+          throw new Error('Malformed desktop helper health response; rebuild with npm run setup. Desktop stays off.');
         }
+        const blockers = [];
+        if (health.secureInput) blockers.push('Secure Input is active; finish protected input manually before enabling desktop.');
+        const missing = [!health.screenRecording && 'Screen Recording', !health.accessibility && 'Accessibility'].filter(Boolean);
+        if (missing.length) blockers.push(`Missing permission: ${missing.join(' and ')}. Enable manually in System Settings > Privacy & Security, then restart Pi. No permission prompt was requested.`);
+        if (blockers.length) throw new Error(`Desktop unavailable: ${blockers.join(' ')}`);
         if (generation !== this.generation) throw new Error('Desktop enable cancelled.');
         this.enabled = true;
         return health;
@@ -69,14 +75,33 @@ export class DesktopController {
       finally { this.activeAbort = undefined; }
     });
   }
-  observe(signal?: AbortSignal) {
+  observe(input: unknown = {}, signal?: AbortSignal) {
     return this.operation(signal, async (t, s) => {
+      validateObserve(input);
+      const source = this.latest;
+      let view: CaptureView | undefined;
+      if (input.zoom) {
+        if (!source) throw new Error('No fresh screenshot ref. Observe first.');
+        this.requireFresh(source, input.zoom.ref);
+        view = zoomView(input.zoom, source);
+      }
       this.latest = undefined;
       try {
-        const reply = await t.request({ op: 'observe' }, s);
+        if (input.waitMs) await delay(input.waitMs, undefined, { signal: s });
+        s.throwIfAborted();
+        if (input.zoom) this.requireFresh(source!, input.zoom.ref);
+        const reply = await t.request({ op: 'observe', ...(input.zoom ? { zoom: input.zoom } : {}) }, s);
         if (!reply.ok) throw new NotDispatched(reply.error ?? 'Desktop observation failed.');
         s.throwIfAborted();
         validateFrame(reply.frame);
+        if (this.now() < reply.frame.capturedAt || this.now() - reply.frame.capturedAt >= REF_TTL_MS) throw new Error('Stale helper screenshot.');
+        if (input.zoom) this.requireFresh(source!, input.zoom.ref);
+        if (source?.ref === reply.frame.ref) throw new Error('Helper reused screenshot ref.');
+        if (view && ((Object.keys(source!.geometry) as (keyof Geometry)[]).some(k => reply.frame!.geometry[k] !== source!.geometry[k]) ||
+          ['x', 'y', 'width', 'height'].some(k => Math.abs(reply.frame!.view[k as keyof CaptureView] - view[k as keyof CaptureView]) > 1e-7))) {
+          throw new Error('Helper zoom does not match source snapshot.');
+        }
+        if (!view) this.requireFullView(reply.frame);
         const { png: _png, ...metadata } = reply.frame;
         this.latest = metadata;
         return imageResult(reply.frame, false);
@@ -89,14 +114,21 @@ export class DesktopController {
       }
     });
   }
+  private requireFresh(frame: Omit<Frame, 'png'>, ref: string) {
+    if (ref !== frame.ref || this.now() - frame.capturedAt >= REF_TTL_MS || this.now() < frame.capturedAt) {
+      throw new NotDispatched('Expired, consumed or foreign screenshot ref. Observe again.');
+    }
+  }
+  private requireFullView(frame: Frame) {
+    const v = frame.view, g = frame.geometry;
+    if (v.x !== 0 || v.y !== 0 || v.width !== g.width || v.height !== g.height) throw new Error('Expected full-display capture view.');
+  }
   act(input: unknown, signal?: AbortSignal) {
     return this.operation(signal, async (t, s) => {
       const frame = this.latest;
       if (!frame) throw new Error('No fresh screenshot ref. Observe first.');
       validateAction(input, frame.width, frame.height);
-      if (input.ref !== frame.ref || this.now() - frame.capturedAt >= REF_TTL_MS || this.now() < frame.capturedAt) {
-        throw new Error('Expired, consumed or foreign screenshot ref. Observe again.');
-      }
+      this.requireFresh(frame, input.ref);
       this.latest = undefined; // Consume before any dispatch, including uncertain failures.
       try {
         const reply = await t.request({ op: 'act', ...input }, s);
@@ -106,6 +138,9 @@ export class DesktopController {
         }
         s.throwIfAborted();
         validateFrame(reply.frame);
+        if (this.now() < reply.frame.capturedAt || this.now() - reply.frame.capturedAt >= REF_TTL_MS) throw new Error('Stale helper screenshot.');
+        this.requireFullView(reply.frame);
+        if (reply.frame.ref === frame.ref) throw new Error('Helper reused screenshot ref.');
         const { png: _png, ...metadata } = reply.frame;
         this.latest = metadata;
         return imageResult(reply.frame, true);

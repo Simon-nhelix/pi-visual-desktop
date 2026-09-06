@@ -1,4 +1,4 @@
-# pi-visual-desktop · 0.1.1
+# pi-visual-desktop · 0.2.0
 
 Pi의 **현재 비전 모델이 화면을 보고 다음 동작을 고르는**, 작은 로컬 데스크톱 패키지입니다. 기존 computer-use 플러그인/Cua Driver를 사용하지 않습니다. 서버·VPS·별도 LLM·AX/DOM/OCR 탐색·앱별 단축키 전략·백그라운드 입력 우회가 없습니다.
 
@@ -66,13 +66,15 @@ pi install "$PWD"       # 로컬 경로를 Pi에 등록 (파일 복사 아님)
 
 | 도구 | 의미 |
 |---|---|
-| `desktop_observe {}` | 주 디스플레이 전체 PNG + timestamp, width/height, opaque ref |
-| `desktop_act` | 최신 ref로 원시 동작 하나 → 250ms settle → 후속 PNG와 새 ref |
+| `desktop_observe {}` | 주 디스플레이 전체 PNG + timestamp, width/height, view, opaque ref |
+| `desktop_observe {zoom:{ref,x,y,width,height}, waitMs?}` | 최신 이미지의 영역을 **새로 고해상도 캡처** (중첩 가능), 선택적 명시 대기 |
+| `desktop_act` | 최신 ref로 원시 동작 하나 → 250ms settle → **전체 화면** PNG와 새 ref |
 
 모든 act는 `ref`, `action` 및 **해당 동작에 필요한 필드만** 전달합니다:
 
 | action | 추가 필드 |
 |---|---|
+| `move` | `x`, `y` (버튼 없이 mouseMoved 이벤트 1회, hover 가능) |
 | `click`, `double_click`, `right_click` | `x`, `y` |
 | `drag` | `x`, `y`, `toX`, `toY` (고정 약 300ms, 왼쪽 버튼) |
 | `scroll` | `x`, `y`, `dx`, `dy` (정수 픽셀, 양수=오른쪽/아래, 각 -1000…1000, 둘 다 0 불가) |
@@ -86,13 +88,24 @@ pi install "$PWD"       # 로컬 경로를 Pi에 등록 (파일 복사 아님)
 
 ### 좌표 규약 — 표시된 이미지의 정수 픽셀만
 
-- 화면 일부가 아닌 **주 디스플레이 전체**를 ScreenCaptureKit으로 캡처합니다. 커서를 포함하며 창/앱을 제외하지 않습니다.
-- Quartz 표시 방향/종횡비를 기준으로 긴 변을 최대 **1280픽셀**로 명시적으로 리사이즈합니다. 각 변을 내림한 뒤 전체 화면을 그 정수 크기에 축별로 맞춥니다(`preservesAspectRatio=false`, 여백 없음). 실제 PNG 크기와 메타데이터 일치를 검사합니다.
+- 기본은 **주 디스플레이 전체**, zoom을 명시하면 선택 영역을 ScreenCaptureKit으로 새로 캡처합니다. 커서를 포함하며 창/앱을 제외하지 않습니다. 확대된 옛 PNG를 만들지 않습니다.
+- Quartz 표시 방향/종횡비를 기준으로 긴 변을 최대 **1280픽셀**로 명시적으로 리사이즈합니다. 네이티브 해상도를 넘지 않으며 각 변을 내림한 뒤 캡처 영역을 그 정수 크기에 축별로 맞춥니다(`preservesAspectRatio=false`, 여백 없음). 실제 PNG 크기와 메타데이터 일치를 검사합니다.
 - 정확히 반환된 PNG에서 왼쪽 위 픽셀은 `(0,0)`, 오른쪽 아래는 `(width-1,height-1)`입니다. `x`는 오른쪽, `y`는 아래로 증가합니다. 정규화 좌표·원본 Retina 픽셀·다른 화면의 좌표는 받지 않습니다.
 - 픽셀 **중심**을 Quartz 전역 포인트로 변환합니다:
-  `X = bounds.x + (x + 0.5) * bounds.width / image.width`,
-  `Y = bounds.y + (y + 0.5) * bounds.height / image.height`.
+  `X = geometry.x + view.x + (x + 0.5) * view.width / image.width`,
+  `Y = geometry.y + view.y + (y + 0.5) * view.height / image.height`.
+  `geometry`는 항상 전체 디스플레이/전경 정보이고 `view`는 디스플레이 로컬 논리 포인트의 캡처 사각형입니다. 전체 화면의 view는 `{x:0,y:0,width:geometry.width,height:geometry.height}`입니다.
   Retina 배율/회전/원점 처리는 코드가 맡습니다. 모델이 배율을 계산하지 않습니다.
+
+### 확대 관찰 / hover / 명시 대기
+
+`desktop_observe {"zoom":{"ref":"최신 ref","x":100,"y":80,"width":300,"height":200}}`처럼 **최신 반환 이미지의 정수 픽셀**로 영역을 선택합니다. 이 예의 숫자는 설명용이며 실제 화면을 보고 정해야 합니다. x/y는 선택의 왼쪽 위 **픽셀 경계**, width/height는 양의 픽셀 개수입니다. 선택 전체가 이미지 안에 있어야 합니다. 코드가 `view.x + x*view.width/image.width` 등으로 논리 포인트 영역을 계산하고, ScreenCaptureKit `sourceRect`에 전달합니다(Apple SDK SCStream.h: display logical points). 실제 desktop의 새 PNG를 얻으므로 작은 글씨를 더 자세히 볼 수 있지만 이미 네이티브 크기면 추가 세부 정보는 늘지 않습니다.
+
+확대 결과의 좌표로 바로 act할 수 있고, 같은 규칙으로 중첩 확대할 수도 있습니다. 모델은 원본 배율을 계산하지 않습니다. 확대 요청도 원본 ref의 정확한 identity/120초 TTL/전체 geometry·전경을 검사합니다(캡처 완료까지 만료되면 거부). 오래된 ref에 새 수명을 주지 않습니다. `{}`는 전체 화면으로 돌아가며 **모든 act의 후속 이미지는 전체 화면**입니다. 이전 확대 좌표를 그 이미지에 재사용하지 마세요.
+
+`desktop_act {"ref":"최신 ref","action":"move","x":…,"y":…}`는 버튼 없이 커서만 한 번 이동합니다. hover 메뉴가 열리는 등 앱 반응은 가능하며 task success를 보장하지 않습니다. 항상 일반 act와 같은 preflight/취소/후속 전체 화면 규칙을 따릅니다.
+
+관찰에 `waitMs`(정수 0…2000, 기본 0)를 명시하면 캡처 전 그만큼만 기다립니다. 예: `desktop_observe {"waitMs":500}`. 확대와 함께 쓸 수도 있고 대기 시간도 원본 ref TTL에 포함됩니다. Esc/off로 취소할 수 있으며 자동 대기/재시도는 없습니다. 대기 중 취소하면 입력 없이 세션이 꺼집니다. 입력 후 고정 250ms settle은 변경하지 않았습니다.
 
 ref는 캡처 시작 시각부터 **120초**, 최신 한 장만 유효하며 한 번만 사용할 수 있습니다. 추론 지연을 허용하되 오래된 화면을 무기한 쓰지 않기 위한 상한입니다. 새 observe는 이전 ref를 대체합니다. 다른 세션의 ref, 사용한 ref, 만료된 ref, NaN/무한대/범위 밖 좌표는 거부합니다.
 
@@ -147,9 +160,19 @@ npm run test:native    # 순수 이벤트/좌표/preflight + build/ 내 임시 f
 npm run health         # 비프롬프팅 권한 상태만 조회
 ```
 
-자동 테스트는 좌표/Retina/회전, schema·named key 매핑, ref TTL/외부·소비, 세션 opt-in/reset, 직렬화, 잠금 충돌/해제/symlink, 이벤트 중단 시 release, 프로세스 timeout/crash/abort/출력 제한, Pi 이미지 전달/throw 오류를 검사합니다. CI도 캡처/입력을 실행하지 않습니다. **컴파일과 mock 통과는 실제 GUI 검증이 아닙니다.**
+자동 테스트는 전체/확대/중첩 좌표와 sourceRect/Retina/회전/소수 반올림, move 이벤트 구성(게시 없음), wait 취소·만료, 정확한 health 원인 안내, schema·named key 매핑, ref TTL/외부·소비, 세션 opt-in/reset, 직렬화, 잠금 충돌/해제/symlink, 이벤트 중단 시 release, 프로세스 timeout/crash/abort/출력 제한, Pi 이미지 전달/throw 오류를 검사합니다. CI도 캡처/입력을 실행하지 않습니다. **컴파일과 mock 통과는 실제 GUI 검증이 아닙니다.**
 
-### 실제 동작 확인 기록
+### 0.2.0 수동 검증 상태
+
+부모가 독립적으로 TypeScript 검사, **Node 48/48 테스트**, Swift helper/fixture 빌드, 무입력 native self-test와 패키징 dry-run을 다시 통과시켰고 코드 리뷰도 통과했습니다.
+
+실제 Pi 0.85.1을 별도 PTY에서 실행한 결과, 사용자 설정 autoEnable=true여도 **Secure Input을 정확히 원인으로 안내하고 꺼진 상태를 유지**했으며 `/desktop status`에서 off를 확인한 뒤 정상 종료했습니다. 모델 프롬프트·화면 캡처·입력은 0회입니다. 이 결과는 실제 TUI 안전 차단/진단 검증이지 GUI 작업 성공이 아닙니다.
+
+**0.2.0 확대·hover·문자 입력·스크롤·드래그의 실제 동작은 아직 NOT RUN**입니다. 이 Mac의 Screen Recording/Accessibility는 true지만 Secure Input=true가 지속돼 GUI 테스트를 중단했습니다. fixture도 실행하지 않았습니다. 보호 입력을 사용자가 정상 종료한 뒤 아래 체크리스트로 확인하세요. 이전 버전의 클릭 성공 기록은 새 기능의 증거가 아닙니다.
+
+내일의 짧은 실행 순서와 기록표: [test/manual/README.md](test/manual/README.md). `npm run build:fixture`는 `build/DesktopScratch.app`만 빌드하고 실행하지 않습니다. fixture는 저장/네트워크/클립보드 기능 없이 클릭 카운터·한글/emoji 편집·양축 스크롤·슬라이더 드래그·hover 색을 제공합니다. 창을 닫거나 Quit Scratch로 종료합니다.
+
+### 실제 동작 확인 기록 (이전 버전)
 
 0.1.1에서는 실제 Pi 0.85.1을 별도 PTY에서 실행해, 격리된 사용자 설정 `autoEnable:true`로 **시작 시 실제 native helper 활성화 → `/desktop status`의 on 확인 → `/desktop off` → status의 off 유지 → `/quit` 정상 종료**를 확인했습니다. 모델 프롬프트·화면 캡처·데스크톱 입력은 0회였으며, 이 검증은 실제 TUI 시작/끄기 경로에 한정됩니다.
 

@@ -82,7 +82,7 @@ test('Pi adapter: non-vision model and RPC tools cannot observe even after opt-i
 
 test('Pi adapter: status reports version and git revision/dirty state without capture', async () => {
   const h = harness(); await h.command('status');
-  assert.match(await versionStatus(), /pi-visual-desktop 0\.1\.1 git=(?:[a-f0-9]{12} (?:clean|dirty)|unavailable)/);
+  assert.match(await versionStatus(), /pi-visual-desktop 0\.2\.0 git=(?:[a-f0-9]{12} (?:clean|dirty)|unavailable)/);
   assert.equal(h.transport.calls.length, 0);
 });
 
@@ -222,4 +222,21 @@ test('User config: only literal true opts in; missing or malformed settings fail
       return true;
     });
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('Pi adapter: observe zoom/wait and move traverse real tool wrapper with image blocks', async () => {
+  const h = harness(); await h.command('on');
+  const runner = { createContext: () => h.ctx, getActiveTools: () => [...h.tools.keys()] } as unknown as ExtensionRunner;
+  const wrap = (name: string) => wrapRegisteredTool({ definition: h.tools.get(name)!, sourceInfo: { source: 'extension', path: 'test' } } as RegisteredTool, runner);
+  const observe = wrap('desktop_observe'), act = wrap('desktop_act');
+  const first = await observe.execute('full', {});
+  const zoom = { ref: (first.details as { ref: string }).ref, x: 0, y: 0, width: 1, height: 1 };
+  const cropped = await observe.execute('zoom', { zoom, waitMs: 1 });
+  assert.deepEqual(h.transport.calls.at(-1), { op: 'observe', zoom });
+  assert.deepEqual(cropped.content[1], { type: 'image', mimeType: 'image/png', data: PNG });
+  const moved = await act.execute('move', { ref: (cropped.details as { ref: string }).ref, action: 'move', x: 0, y: 0 });
+  assert.deepEqual(moved.content[1], { type: 'image', mimeType: 'image/png', data: PNG });
+  assert.equal(h.transport.calls.at(-1)!.action, 'move');
+  await assert.rejects(observe.execute('invalid', { waitMs: 2001 }));
+  await h.command('off');
 });

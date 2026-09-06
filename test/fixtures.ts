@@ -3,7 +3,7 @@ import type { Frame, Reply, Transport } from '../src/protocol.ts';
 export const NOW = 1_000_000;
 export const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1cAAAAASUVORK5CYII=';
 export function frame(): Frame {
-  return { ref: randomUUID(), capturedAt: NOW, width: 1, height: 1, png: PNG,
+  return { ref: randomUUID(), capturedAt: NOW, width: 1, height: 1, png: PNG, view: { x: 0, y: 0, width: 1440, height: 900 },
     geometry: { displayID: 1, x: 0, y: 0, width: 1440, height: 900,
       pixelWidth: 2880, pixelHeight: 1800, rotation: 0, pid: 7, bundle: 'test.scratch', launched: 1 } };
 }
@@ -23,3 +23,6 @@ export function deferred<T>() {
   const promise = new Promise<T>(r => { resolve = r; });
   return { promise, resolve };
 }
+
+// Synthetic solid-color 4x4 PNG, not a desktop capture.
+export const PNG4 = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEUlEQVR4nGNgYGD4j4ZJFQAABloP8SzApEkAAAAASUVORK5CYII=';
