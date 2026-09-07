@@ -168,11 +168,11 @@ pi install "$PWD"
 
 작업 후: `npm run check && npm test && npm run setup && npm run test:native` → diff 확인 → 필요한 코드만 `git add <files>` → `git commit` → `git push`. 다른 Mac에서는 **같은 브랜치**에서 `git pull --ff-only`. 코드는 Git으로 공유하지만 화면 제어와 권한은 항상 각 Mac에 남습니다.
 
-최초 동의 기억 개선을 `main`에 병합하기 전에 시험하려면, Pi를 종료하고 깨끗한 체크아웃에서 다음 작업 브랜치를 사용하세요. 기존 로컬 브랜치가 있으면 `git switch feat/remember-desktop-consent`만 실행합니다.
+최초 동의 기억 개선을 포함한 최신 코드는 `main`에서 받습니다. Pi를 종료하고, 미완료 작업과 개인 파일을 보존한 깨끗한 체크아웃에서 업데이트하세요.
 
 ```sh
 git fetch origin
-git switch --track origin/feat/remember-desktop-consent
+git switch main
 git pull --ff-only
 npm ci --ignore-scripts
 npm run setup
