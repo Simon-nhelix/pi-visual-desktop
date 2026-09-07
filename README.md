@@ -4,9 +4,22 @@ Pi의 **현재 비전 모델이 화면을 보고 다음 동작을 고르는**, �
 
 **macOS 14+ 전용, Node 24+, Xcode Command Line Tools 필요.** 개발 검증은 macOS arm64 / Swift 6.3.3 / Node 24.13.0 / Pi 0.85.1에서 수행했습니다. Intel 및 포괄적인 GUI 동작은 아직 수동 검증하지 않았으며, arm64에서 Aside 새 탭 클릭 1회는 확인했습니다. 회사 PC의 OS는 미확인입니다. Windows/Linux에서는 사용할 수 없습니다.
 
+## 한 번 허용하면 다음부터 바로 사용
+
+설치와 macOS 권한 설정을 마친 뒤, 로컬 Pi에서 **`/desktop on`을 한 번 승인**하세요. 이후 Pi 시작·재시작·`/reload` 시 동의를 기억하고 자동 활성화합니다. 사용자 JSON을 직접 편집하거나 매 세션 다시 켤 필요가 없습니다.
+
+| 하고 싶은 일 | 명령 |
+|---|---|
+| 최초 승인 / 일시 중지 후 재개 | `/desktop on` |
+| 이번 세션에서만 중지 (동의 유지) | `/desktop off` |
+| 앞으로의 자동 활성화까지 끄기 | `/desktop forget` |
+| 현재 상태·차단 원인·버전 확인 | `/desktop status` |
+
+권한 부족·Secure Input·다른 세션의 잠금은 시작할 때 안내합니다. 자동 활성화 자체는 화면을 캡처하거나 입력하지 않습니다. 자세한 설명은 아래 **사용** 항목을 참고하세요.
+
 ## 먼저 독립적으로 시험하기
 
-기존 도구와 새 도구를 섞지 않고, 전역 설정을 바꾸지 않는 시험 실행입니다:
+기존 도구와 새 도구를 섞지 않고, 전역 **패키지 등록**을 바꾸지 않는 시험 실행입니다. 단, `/desktop on` 승인 시 제어 동의는 사용자 설정에 기억됩니다:
 
 ```sh
 cd ~/Projects/pi-visual-desktop
@@ -16,7 +29,7 @@ npm run health
 pi --no-extensions -e ./src/index.ts --tools desktop_observe,desktop_act
 ```
 
-이 실행에서는 다른 확장(기존 computer-use 및 확장 제공 모델 포함)을 로드하지 않습니다. 사용 가능한 비전 모델을 선택한 뒤, 자동 활성화를 설정하지 않았다면 `/desktop on`으로 동의하고 민감 정보 없는 임시 문서에서 아래 수동 체크리스트를 수행하세요. 종료하면 기존 Pi 설정은 그대로입니다. 실제 사용으로 전환할 때도 기존 computer-use와 동시에 활성화하지 말고 사용자가 `pi config`에서 선택하세요.
+이 실행에서는 다른 확장(기존 computer-use 및 확장 제공 모델 포함)을 로드하지 않습니다. 사용 가능한 비전 모델을 선택한 뒤, 자동 활성화를 설정하지 않았다면 `/desktop on`으로 동의하고 민감 정보 없는 임시 문서에서 아래 수동 체크리스트를 수행하세요. 종료해도 제어 동의는 기억됩니다. 시험 후 철회하려면 종료 전에 `/desktop forget`을 사용하세요. 다른 Pi 설정/패키지 등록은 바꾸지 않습니다. 실제 사용으로 전환할 때도 기존 computer-use와 동시에 활성화하지 말고 사용자가 `pi config`에서 선택하세요.
 
 ## 설치와 권한 (사용자가 직접)
 
@@ -37,14 +50,17 @@ pi install "$PWD"       # 로컬 경로를 Pi에 등록 (파일 복사 아님)
 
 로컬 Pi TUI에서 비전 모델을 선택하고:
 
-- `/desktop on` → 수동 활성화는 표준 확인 창에서 동의합니다. 이미 켜져 있으면 추가 확인하지 않습니다. RPC/print/JSON 실행에서는 활성화할 수 없습니다.
-- `/desktop off` → 진행 중 동작 취소, ref 폐기, helper 종료 및 잠금 해제. 같은 세션에서 자동으로 다시 켜지지 않습니다.
-- `/desktop status` → 패키지 버전, Git revision 및 clean/dirty, 활성화 상태와 시작 시 적용한 `autoEnable` 값. 캡처하지 않습니다.
-- 재시작·새 세션·세션 전환·fork·reload에서는 이전 ref/실행 상태를 폐기합니다. 아래 자동 활성화가 설정돼 있으면 다시 활성화하고, 아니면 새로 동의해야 합니다.
+- `/desktop on` → **최초 한 번** 표준 확인 창에서 이 Mac의 앞으로의 로컬 Pi 세션에도 제어를 허용한다는 설명에 동의합니다. 사용자 설정에 동의를 저장하고, 이후에는 다시 묻지 않습니다. RPC/print/JSON 실행에서는 활성화하거나 동의를 저장할 수 없습니다.
+- `/desktop off` → **현재 세션 일시 중지**. 진행 중 동작 취소, ref 폐기, helper 종료 및 잠금 해제. 같은 세션에서 자동으로 다시 켜지지 않습니다. 동의는 기억하며 `/desktop on`으로 재개할 때 다시 승인하지 않습니다.
+- `/desktop forget` → 즉시 중지하고 **저장된 동의를 철회**합니다(`autoEnable:false`). 다음 시작도 꺼진 상태입니다. 다시 쓰려면 `/desktop on`에서 승인합니다.
+- `/desktop status` → 패키지 버전, Git revision 및 clean/dirty, 활성화 상태와 마지막으로 읽거나 저장한 `autoEnable`, 차단 원인. 캡처하지 않습니다.
+- 재시작·새 세션·세션 전환·fork·reload에서는 이전 ref/실행 상태를 폐기하고, 기억된 동의가 있으면 권한·Secure Input·잠금을 확인한 뒤 자동 활성화합니다. 설정을 외부에서 바꾼 경우 다음 시작 또는 `/desktop on`에서 다시 읽습니다.
 
-### Pi 시작 시 자동 활성화
+### 최초 동의를 기억하고 시작할 때 확인
 
-매번 `/desktop on`을 입력하지 않으려면 **사용자 전역 설정** `~/.pi/agent/settings.json`에 다음 키를 병합하세요. 파일 전체를 아래 내용으로 덮어쓰면 안 됩니다.
+이제 **`/desktop on` 승인 자체가 자동 활성화 설정을 저장**합니다. JSON을 직접 편집할 필요가 없습니다. 초기 설치/동의 철회 상태에서는 시작 시 한 번 승인하라는 안내를 표시하고, 승인 팝업을 임의로 띄우지는 않습니다. 이후 시작에서는 권한·Secure Input·잠금 문제를 작업 전에 알립니다. 하단 상태는 `desktop: on`, `desktop: off`, 또는 비전 모델이 아닌 경우 `desktop: vision model required`로 표시됩니다. 상태는 명령/모델 전환/도구 결과 시 갱신하며 백그라운드 폴링하지 않습니다.
+
+저장 대상은 **사용자 전역 설정** `~/.pi/agent/settings.json`의 아래 키입니다. 기존에 직접 설정한 `true`도 그대로 인정합니다. 수동 편집 시 파일 전체를 아래 내용으로 덮어쓰면 안 됩니다.
 
 ```json
 {
@@ -54,11 +70,15 @@ pi install "$PWD"       # 로컬 경로를 Pi에 등록 (파일 복사 아님)
 }
 ```
 
-`PI_CODING_AGENT_DIR`를 별도로 쓰면 그 디렉터리의 `settings.json`을 읽습니다. 프로젝트 `.pi/settings.json`은 자동 활성화 동의의 근거로 사용하지 않습니다. 정확한 JSON boolean `true`만 동의로 인정하며, 기본값은 `false`입니다. 회사 Mac에서도 원한다면 해당 Mac의 사용자 설정에 직접 추가하세요. 개인 설정은 저장소에 커밋하지 않습니다.
+`PI_CODING_AGENT_DIR`를 별도로 쓰면 그 디렉터리의 `settings.json`을 읽고 씁니다. 프로젝트 `.pi/settings.json`은 동의의 근거도 저장 대상도 아닙니다. 정확한 JSON boolean `true`만 동의로 인정하며, **최초 승인 전에는 꺼져 있습니다**. 회사 Mac에서도 처음 한 번 승인하세요. 개인 설정은 저장소에 커밋하지 않습니다.
+
+저장은 Pi와 같은 설정 잠금을 사용하며, 다른 키와 확장의 하위 설정을 보존해 0600 임시 파일을 원자적으로 교체합니다. 잠금 충돌·잘못된 JSON/객체·symlink 대상은 덮어쓰지 않습니다. 저장 실패 시 **기억되지 않았다는 경고와 함께 승인한 현재 세션만 사용**할 수 있습니다. `/desktop on`으로 저장을 다시 시도할 수 있습니다. `/desktop forget`의 저장이 실패해도 현재 제어는 중지되지만 다음 시작 동의는 남아 있을 수 있으므로, 안내대로 설정을 수정한 뒤 재시작하세요.
+
+승인 기록은 권한/잠금 검사보다 먼저 저장하므로, Secure Input이나 일시적인 잠금 때문에 활성화가 실패해도 동의를 다시 묻지 않습니다. 안전 차단을 자동으로 재시도하거나 우회하지는 않습니다.
 
 이 설정은 **이후 로컬 Pi TUI 세션에서 화면 제어를 허용한다는 지속적 사용자 동의**입니다. 시작 시 helper의 권한·잠금 상태만 확인하고 안내를 표시하며, 스크린샷이나 입력을 자동 실행하지는 않습니다. 실제 관찰·입력에는 여전히 비전 모델과 도구 호출이 필요합니다. 권한 부족, Secure Input, 다른 세션의 잠금, 잘못된 설정 등은 경고 후 꺼진 상태로 남기며 자동 재시도하지 않습니다. 여러 Pi를 켜면 먼저 활성화한 세션이 데스크톱을 점유하므로 사용하지 않는 세션에서 `/desktop off` 하세요.
 
-현재 세션만 끄려면 `/desktop off`, 이후 자동 활성화도 끄려면 설정을 `false`로 바꾼 뒤 `/desktop off` 하세요. 설정 변경은 다음 세션 시작이나 `/reload`에서 적용됩니다. 자동 활성화는 화면 제어 동의만 변경하며, 자동 코드 업데이트나 OS 권한 우회는 하지 않습니다.
+현재 세션만 끄려면 `/desktop off`, 이후 자동 활성화도 끄려면 `/desktop forget`을 쓰세요. 이 명령은 현재 세션과 앞으로 시작하는 세션에 적용되며 다른 실행 중인 Pi 프로세스를 원격 중지하지는 않습니다. 자동 활성화는 화면 제어 동의만 변경하며, 자동 코드 업데이트나 OS 권한 우회는 하지 않습니다.
 
 **같은 데스크톱을 사람이 동시에 조작하지 마세요.** 실제 전경 화면에 입력됩니다. 다른 앱을 자동 활성화하거나 실패한 입력을 다른 방식으로 재시도하지 않습니다.
 
@@ -146,7 +166,23 @@ pi install "$PWD"
 
 집에서도 회사에서도 작업 전: Pi 제어를 끄고 종료 → `git status`로 미완료 작업 확인 → `git pull --ff-only` → `npm ci --ignore-scripts` → `npm run setup`. 충돌/dirty 작업은 사람이 해결합니다. 세션 중 자동 pull/reset/stash는 하지 않습니다.
 
-작업 후: `npm run check && npm test && npm run setup && npm run test:native` → diff 확인 → 필요한 코드만 `git add <files>` → `git commit` → `git push`. 다른 Mac에서는 다시 `git pull --ff-only`. 코드는 Git으로 공유하지만 화면 제어와 권한은 항상 각 Mac에 남습니다.
+작업 후: `npm run check && npm test && npm run setup && npm run test:native` → diff 확인 → 필요한 코드만 `git add <files>` → `git commit` → `git push`. 다른 Mac에서는 **같은 브랜치**에서 `git pull --ff-only`. 코드는 Git으로 공유하지만 화면 제어와 권한은 항상 각 Mac에 남습니다.
+
+최초 동의 기억 개선을 `main`에 병합하기 전에 시험하려면, Pi를 종료하고 깨끗한 체크아웃에서 다음 작업 브랜치를 사용하세요. 기존 로컬 브랜치가 있으면 `git switch feat/remember-desktop-consent`만 실행합니다.
+
+```sh
+git fetch origin
+git switch --track origin/feat/remember-desktop-consent
+git pull --ff-only
+npm ci --ignore-scripts
+npm run setup
+```
+
+이미 로컬 경로로 설치했다면 `pi install`을 반복할 필요는 없습니다. 새 의존성 설치 후 Pi를 시작하세요. 해당 Mac의 기존 `autoEnable:true`는 유지되며, 처음 쓰는 Mac에서만 `/desktop on` 최초 승인이 필요합니다. 실행 중인 개발 세션에서 **TypeScript만** 바꿨고 의존성/helper가 준비돼 있다면 `/reload`로 반영할 수 있습니다.
+
+### 저장소에 공유하는 파일
+
+제품 코드·테스트·README·공통 수동 인수 문서는 공유합니다. 개인별 에이전트 지침(`AGENTS.md`, `CLAUDE.md`, `GEMINI.md` 등), 도구별 로컬 설정 디렉터리, Superpowers 작업 문서(`docs/superpowers/`)는 로컬에만 보관하며 `.gitignore`로 제외합니다. 공통 개발·안전 규칙은 개인 설정 대신 이 README와 테스트에 반영하세요.
 
 **Pi 관리 Git 캐시(`~/.pi/agent/git/...`)를 개발 작업 공간으로 편집하지 마세요.** Pi 갱신은 그 캐시를 reset/clean할 수 있습니다. 안정 사용자는 별도 체크아웃에서 게시된 태그(예: `v0.1.0`, 아직 게시하지 않았다면 사용 불가)를 pin하고 명시적으로 빌드한 뒤 로컬 경로로 설치할 수 있습니다. Pi의 `git:…@tag` pin도 가능하지만 캐시에서는 소스 수정 없이 명시적 빌드만 해야 합니다. 업데이트는 제어 세션을 종료한 뒤 사용자가 수행합니다.
 
@@ -162,15 +198,30 @@ npm run health         # 비프롬프팅 권한 상태만 조회
 
 자동 테스트는 전체/확대/중첩 좌표와 sourceRect/Retina/회전/소수 반올림, move 이벤트 구성(게시 없음), wait 취소·만료, 정확한 health 원인 안내, schema·named key 매핑, ref TTL/외부·소비, 세션 opt-in/reset, 직렬화, 잠금 충돌/해제/symlink, 이벤트 중단 시 release, 프로세스 timeout/crash/abort/출력 제한, Pi 이미지 전달/throw 오류를 검사합니다. CI도 캡처/입력을 실행하지 않습니다. **컴파일과 mock 통과는 실제 GUI 검증이 아닙니다.**
 
-### 0.2.0 수동 검증 상태
+### 동의 기억 UX 개발 변경 (2026-09-07)
+
+`/desktop on`의 최초 승인 기억, 재시작 자동 활성화, off 재개, forget 철회, 설정 보존/잠금 충돌/손상 거부, 저장 실패, 종료 중 경쟁 조건, 시작 시 차단·비전 모델 안내를 검증했습니다.
+
+| 검증 | 결과 |
+|---|---|
+| TypeScript 타입 검사 | PASS |
+| Node 자동 테스트 (임시 설정 파일 + mock GUI transport) | **63/63 PASS** |
+| 기존 native 무입력 self-test | PASS; 캡처/입력 없음 |
+| 실제 Pi 0.85.1 확장 로더 | PASS; 도구 2개와 `/desktop` 등록, `session_start` 실행 없음 |
+| 패키징 dry-run / 런타임 의존성 확인 | PASS |
+| 새 TUI 확인 창·재시작·철회 및 실제 GUI 인수 | **NOT RUN** |
+
+이 변경은 Swift 입력/캡처 구현을 바꾸지 않습니다. 코드 로딩 검증을 전체 TUI/GUI 인수 통과로 간주하지는 않습니다. 새 TypeScript 구현은 `/reload` 또는 Pi 재시작 후 적용됩니다. 패키지 버전은 0.2.0을 유지하며, 개발 변경은 `/desktop status`의 Git revision과 clean/dirty로 구별합니다.
+
+### 0.2.0 수동 검증 상태 (이전 기록)
 
 부모가 독립적으로 TypeScript 검사, **Node 48/48 테스트**, Swift helper/fixture 빌드, 무입력 native self-test와 패키징 dry-run을 다시 통과시켰고 코드 리뷰도 통과했습니다.
 
 실제 Pi 0.85.1을 별도 PTY에서 실행한 결과, 사용자 설정 autoEnable=true여도 **Secure Input을 정확히 원인으로 안내하고 꺼진 상태를 유지**했으며 `/desktop status`에서 off를 확인한 뒤 정상 종료했습니다. 모델 프롬프트·화면 캡처·입력은 0회입니다. 이 결과는 실제 TUI 안전 차단/진단 검증이지 GUI 작업 성공이 아닙니다.
 
-**0.2.0 확대·hover·문자 입력·스크롤·드래그의 실제 동작은 아직 NOT RUN**입니다. 이 Mac의 Screen Recording/Accessibility는 true지만 Secure Input=true가 지속돼 GUI 테스트를 중단했습니다. fixture도 실행하지 않았습니다. 보호 입력을 사용자가 정상 종료한 뒤 아래 체크리스트로 확인하세요. 이전 버전의 클릭 성공 기록은 새 기능의 증거가 아닙니다.
+**0.2.0 확대·hover·문자 입력·스크롤·드래그의 실제 동작은 아직 NOT RUN**입니다. 당시 테스트 Mac의 Screen Recording/Accessibility는 true였지만 Secure Input=true가 지속돼 GUI 테스트를 중단했습니다. fixture도 실행하지 않았습니다. 보호 입력을 사용자가 정상 종료한 뒤 아래 체크리스트로 확인하세요. 이전 버전의 클릭 성공 기록은 새 기능의 증거가 아닙니다.
 
-내일의 짧은 실행 순서와 기록표: [test/manual/README.md](test/manual/README.md). `npm run build:fixture`는 `build/DesktopScratch.app`만 빌드하고 실행하지 않습니다. fixture는 저장/네트워크/클립보드 기능 없이 클릭 카운터·한글/emoji 편집·양축 스크롤·슬라이더 드래그·hover 색을 제공합니다. 창을 닫거나 Quit Scratch로 종료합니다.
+수동 인수 실행 순서와 기록표: [test/manual/README.md](test/manual/README.md). `npm run build:fixture`는 `build/DesktopScratch.app`만 빌드하고 실행하지 않습니다. fixture는 저장/네트워크/클립보드 기능 없이 클릭 카운터·한글/emoji 편집·양축 스크롤·슬라이더 드래그·hover 색을 제공합니다. 창을 닫거나 Quit Scratch로 종료합니다.
 
 ### 실제 동작 확인 기록 (이전 버전)
 

@@ -1,33 +1,43 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { wrapRegisteredTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionRunner,
   type RegisteredCommand, type RegisteredTool, type ToolDefinition } from '@earendil-works/pi-coding-agent';
-import { readAutoEnable, registerDesktop, versionStatus } from '../src/index.ts';
+import { readAutoEnable, writeAutoEnable, registerDesktop, versionStatus } from '../src/index.ts';
 import { DesktopController } from '../src/controller.ts';
 import { MockTransport, NOW, PNG, deferred } from './fixtures.ts';
 
-function harness(platform: NodeJS.Platform = 'darwin', loadAutoEnable: () => Promise<boolean> = async () => false) {
+function harness(platform: NodeJS.Platform = 'darwin', loadAutoEnable?: () => Promise<boolean>,
+  saveAutoEnable?: (value: boolean, isCurrent: () => boolean) => Promise<boolean>) {
+  let remembered = false;
+  const saves: boolean[] = [];
+  const save = saveAutoEnable ?? (async (value: boolean, isCurrent: () => boolean) => {
+    if (!isCurrent()) return false;
+    remembered = value; saves.push(value); return true;
+  });
   const transport = new MockTransport();
   const controller = new DesktopController(() => transport, () => NOW);
   const tools = new Map<string, ToolDefinition>();
   const events = new Map<string, () => Promise<void>>();
   let command!: RegisteredCommand;
-  const notifications: string[] = [];
+  const notifications: string[] = [], prompts: string[] = [];
+  const statuses = new Map<string, string | undefined>();
   let confirmations = 0, approved = true;
   const ctx = { mode: 'tui', hasUI: true, model: { input: ['text', 'image'] }, isIdle: () => true,
-    ui: { notify: (message: string) => notifications.push(message), confirm: async () => { confirmations++; return approved; } },
+    ui: { notify: (message: string) => notifications.push(message),
+      setStatus: (key: string, value: string | undefined) => statuses.set(key, value),
+      confirm: async (title: string, message: string) => { confirmations++; prompts.push(`${title}\n${message}`); return approved; } },
   } as unknown as ExtensionCommandContext;
   const pi = { registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
     registerCommand: (_name: string, definition: RegisteredCommand) => { command = definition; },
     on: (name: string, handler: (event: unknown, context: ExtensionCommandContext) => Promise<void>) =>
       events.set(name, () => handler({ reason: 'startup' }, ctx)),
   } as unknown as ExtensionAPI;
-  registerDesktop(pi, controller, platform, loadAutoEnable);
-  return { transport, controller, tools, events, ctx, notifications,
+  registerDesktop(pi, controller, platform, loadAutoEnable ?? (async () => remembered), save);
+  return { transport, controller, tools, events, ctx, notifications, prompts, statuses, saves,
     approve: (value: boolean) => { approved = value; }, confirmations: () => confirmations,
     command: (arg: string) => command.handler(arg, ctx) };
 }
@@ -60,15 +70,18 @@ test('Pi adapter: real Pi registered-tool wrapper preserves actual image blocks 
   assert.equal(h.confirmations(), 1);
 });
 
-test('Pi adapter: session start/shutdown resets opt-in; stale confirmation cannot enable', async () => {
-  const h = harness(); await h.command('on'); await h.events.get('session_start')!();
+test('Pi adapter: revoked consent on session start resets control; stale confirmation cannot enable', async () => {
+  const h = harness('darwin', async () => false); await h.command('on'); await h.events.get('session_start')!();
   assert.equal(h.controller.isEnabled, false);
   await h.command('on'); await h.events.get('session_shutdown')!(); assert.equal(h.controller.isEnabled, false);
-  const confirmation = deferred<boolean>();
-  h.ctx.ui.confirm = () => confirmation.promise;
+  const confirmation = deferred<boolean>(), entered = deferred<void>();
+  h.ctx.ui.confirm = () => { entered.resolve(); return confirmation.promise; };
+  const savedBefore = h.saves.length;
   const command = h.command('on');
+  await entered.promise;
   await h.events.get('session_shutdown')!(); confirmation.resolve(true); await command;
   assert.equal(h.controller.isEnabled, false);
+  assert.equal(h.saves.length, savedBefore);
 });
 
 test('Pi adapter: non-vision model and RPC tools cannot observe even after opt-in', async () => {
@@ -239,4 +252,153 @@ test('Pi adapter: observe zoom/wait and move traverse real tool wrapper with ima
   assert.equal(h.transport.calls.at(-1)!.action, 'move');
   await assert.rejects(observe.execute('invalid', { waitMs: 2001 }));
   await h.command('off');
+});
+
+
+test('Pi adapter: first approval explains persistence and fresh adapter restores saved consent health-only', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'desktop-adapter-consent-'));
+  const file = join(directory, 'settings.json');
+  try {
+    await writeFile(file, '{"theme":"dark"}');
+    const load = () => readAutoEnable(file);
+    const save = (value: boolean, current: () => boolean) => writeAutoEnable(value, current, file);
+    const first = harness('darwin', load, save);
+    await first.command('on');
+    assert.equal(await readAutoEnable(file), true);
+    assert.equal(first.controller.isEnabled, true);
+    assert.match(first.prompts[0], /future.*local.*TUI/i);
+    assert.match(first.prompts[0], /forget/);
+    assert.equal(JSON.parse(await readFile(file, 'utf8')).theme, 'dark');
+    await first.events.get('session_shutdown')!();
+    const next = harness('darwin', load, save);
+    await next.events.get('session_start')!();
+    assert.equal(next.controller.isEnabled, true);
+    assert.equal(next.confirmations(), 0);
+    assert.deepEqual(next.transport.calls, [{ op: 'health' }]);
+    await next.command('off');
+    await next.command('on');
+    assert.equal(next.controller.isEnabled, true);
+    assert.equal(next.confirmations(), 0);
+    await next.command('forget');
+    assert.equal(next.controller.isEnabled, false);
+    assert.equal(await readAutoEnable(file), false);
+    const revoked = harness('darwin', load, save);
+    await revoked.events.get('session_start')!();
+    assert.equal(revoked.controller.isEnabled, false);
+    assert.equal(revoked.transport.calls.length, 0);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('Pi adapter: cancel/busy/headless never persist or start health', async () => {
+  const cancelled = harness(); cancelled.approve(false);
+  await cancelled.command('on');
+  assert.deepEqual(cancelled.saves, []);
+  assert.deepEqual(cancelled.transport.calls, []);
+  const busy = harness(); busy.ctx.isIdle = () => false;
+  await busy.command('on');
+  assert.deepEqual(busy.saves, []);
+  assert.equal(busy.confirmations(), 0);
+  for (const mode of ['rpc', 'print', 'json'] as const) {
+    const h = harness(); h.ctx.mode = mode;
+    await h.command('on'); await h.command('forget');
+    assert.deepEqual(h.saves, []);
+    assert.deepEqual(h.transport.calls, []);
+  }
+});
+
+test('Pi adapter: failed persistence is explicit session-only use, not a claim of remembered consent', async () => {
+  const h = harness('darwin', async () => false, async () => { throw new Error('disk failure'); });
+  await h.command('on');
+  assert.equal(h.controller.isEnabled, true);
+  assert.match(h.notifications.join(' '), /not saved.*session only/i);
+  await h.command('status');
+  assert.match(h.notifications.at(-1)!, /autoEnable=false/);
+  await h.events.get('session_start')!();
+  assert.equal(h.controller.isEnabled, false);
+});
+
+test('Pi adapter: shutdown during manual health does not publish stale errors or status', async () => {
+  const entered = deferred<void>(), health = deferred<Awaited<ReturnType<MockTransport['request']>>>();
+  const h = harness('darwin', async () => true);
+  h.transport.handle = () => { entered.resolve(); return health.promise; };
+  const enabling = h.command('on'); await entered.promise;
+  const stopping = h.events.get('session_shutdown')!();
+  health.resolve({ ok: true, health: { screenRecording: true, accessibility: true, secureInput: false } });
+  await Promise.all([enabling, stopping]);
+  assert.equal(h.controller.isEnabled, false);
+  assert.deepEqual(h.notifications, []);
+  assert.equal(h.statuses.get('desktop'), undefined);
+});
+
+test('Pi adapter: first approval is remembered even when health is temporarily blocked', async () => {
+  const h = harness();
+  h.transport.handle = async () => ({ ok: true, health: { screenRecording: true, accessibility: true, secureInput: true } });
+  await h.command('on');
+  assert.deepEqual(h.saves, [true]);
+  assert.equal(h.controller.isEnabled, false);
+  assert.match(h.notifications.join(' '), /Secure Input/);
+});
+
+test('Pi adapter: off/shutdown while consent save waits cannot commit or enable', async () => {
+  for (const stop of ['off', 'shutdown']) {
+    const entered = deferred<void>(), resume = deferred<void>();
+    let persisted = false;
+    const h = harness('darwin', async () => false, async (value, current) => {
+      entered.resolve(); await resume.promise;
+      if (!current()) return false;
+      persisted = value; return true;
+    });
+    const enabling = h.command('on');
+    await entered.promise;
+    if (stop === 'off') await h.command('off'); else await h.events.get('session_shutdown')!();
+    resume.resolve(); await enabling;
+    assert.equal(persisted, false);
+    assert.equal(h.controller.isEnabled, false);
+    assert.equal(h.transport.calls.length, 0);
+  }
+});
+
+test('Pi adapter: forget orders revocation after an in-flight save and stale on cannot re-enable', async () => {
+  const entered = deferred<void>(), resume = deferred<void>();
+  let persisted = false;
+  const h = harness('darwin', async () => persisted, async (value, current) => {
+    if (value) { entered.resolve(); await resume.promise; }
+    if (!current()) return false;
+    persisted = value; return true;
+  });
+  const enabling = h.command('on'); await entered.promise;
+  const forgetting = h.command('forget');
+  resume.resolve(); await Promise.all([enabling, forgetting]);
+  assert.equal(persisted, false);
+  assert.equal(h.controller.isEnabled, false);
+  assert.equal(h.transport.calls.length, 0);
+});
+
+test('Pi adapter: failed forget stops immediately and warns consent may still be saved', async () => {
+  const h = harness('darwin', async () => true, async () => { throw new Error('disk failure'); });
+  await h.events.get('session_start')!();
+  await h.command('forget');
+  assert.equal(h.controller.isEnabled, false);
+  assert.match(h.notifications.at(-1)!, /may still.*saved/i);
+});
+
+test('Pi adapter: startup gives availability before work; non-vision model never appears ready', async () => {
+  const missing = harness(); await missing.events.get('session_start')!();
+  assert.match(missing.notifications.join(' '), /first.*approval|approve.*once/i);
+  assert.match(missing.statuses.get('desktop')!, /off/i);
+  assert.equal(missing.confirmations(), 0);
+  const blocked = harness('darwin', async () => true);
+  blocked.transport.handle = async () => ({ ok: false, error: 'Another session holds the desktop lock.' });
+  await blocked.events.get('session_start')!();
+  assert.match(blocked.statuses.get('desktop')!, /off/i);
+  await assert.rejects(blocked.tools.get('desktop_observe')!.execute('id', {}, undefined, undefined, blocked.ctx), /lock/);
+  const textOnly = harness('darwin', async () => true);
+  textOnly.ctx.model = { input: ['text'] } as typeof textOnly.ctx.model;
+  await textOnly.events.get('session_start')!();
+  assert.match(textOnly.notifications.join(' '), /vision/i);
+  assert.match(textOnly.statuses.get('desktop')!, /vision/i);
+  textOnly.ctx.model = { input: ['text', 'image'] } as typeof textOnly.ctx.model;
+  await textOnly.events.get('model_select')!();
+  assert.match(textOnly.statuses.get('desktop')!, /on/i);
+  assert.equal(textOnly.transport.calls.length, 1);
 });

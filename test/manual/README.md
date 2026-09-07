@@ -1,4 +1,4 @@
-# 내일: 0.2.0 수동 인수 (GUI 조작은 아직 NOT RUN)
+# 0.2.0 수동 인수 + 동의 기억 UX (실제 GUI 추가 검증은 NOT RUN)
 
 **사용자/부모만 실행.** 민감 창을 닫고 다른 desktop 제어 세션을 끕니다. Secure Input을 우회하거나 테스트 중 권한을 바꾸지 않습니다. 구현 당시 부모 관측: Screen Recording/Accessibility=true, Secure Input=true. 보호 입력을 사용자가 정상 종료하기 전에는 제어 시험을 중단합니다.
 
@@ -8,7 +8,7 @@
 2. `npm ci --ignore-scripts && npm run check && npm test && npm run setup && npm run test:native && npm run build:fixture` — 빌드/무입력 테스트만.
 3. 사용자 직접 `npm run health`: 두 권한=true, secureInput=false 확인. false/true가 다르면 중단하고 안내를 따릅니다. fixture를 실행해도 Secure Input이 해제되지는 않습니다.
 4. 사용자 직접 `open build/DesktopScratch.app`. **빌드 스크립트는 앱을 자동 실행하지 않습니다.** 창이 주 디스플레이에 맞는지 확인. 작은 화면이면 패널이 잘리는지 기록하고 중단합니다.
-5. 로컬 Pi: `pi --no-extensions -e ./src/index.ts --tools desktop_observe,desktop_act`. 비전 모델 선택 → `/desktop on` 확인 (기존 사용자 autoEnable=true면 시작 health만 자동 수행) → `/desktop status`에서 0.2.0/revision/on 기록. 전역 설정 변경 필요 없음.
+5. 로컬 Pi: `pi --no-extensions -e ./src/index.ts --tools desktop_observe,desktop_act`. 비전 모델 선택 → `/desktop on` 최초 승인 (미래 세션 제어 동의 설명, 사용자 설정에 자동 저장; 기존 autoEnable=true면 시작 health만 수행) → `/desktop status`에서 0.2.0/revision/on 기록. 사용자 JSON을 직접 수정할 필요는 없으며, 제어 동의만 저장됩니다.
 6. 사람이 fixture를 앞에 놓은 뒤 손을 떼고 모델에 관찰을 요청합니다. 도구는 앱을 활성화하지 않습니다. 시험 중 사람과 모델이 동시에 조작하지 않습니다.
 
 ## 도구 호출 규칙
@@ -21,7 +21,20 @@
 
 부모가 별도 승인된 로컬 harness를 사용하는 경우에도 동일 경로는 `DesktopController.observe(params = {}, signal?)`, `DesktopController.act(params, signal?)`입니다. `observe(signal)`은 더 이상 지원하지 않습니다. helper wire는 `{"op":"observe","zoom":{...}}`; waitMs는 controller가 대기 후 제거합니다. 직접 helper wire 호출로 Pi 동의 경로를 대신하지 마세요.
 
-## 이번 검증 결과
+## 동의 기억 UX 추가 인수 (2026-09-07, 실제 TUI NOT RUN)
+
+자동 테스트는 임시 사용자 설정과 mock transport를 사용하며 실제 화면/입력이 없습니다. 아래는 사람이 로컬 TUI에서 별도로 확인할 항목입니다. 기존 동의를 지우는 시험이므로 별도 `PI_CODING_AGENT_DIR`와 사용 가능한 모델을 준비하거나, 현재 동의를 철회/재승인한다는 점을 알고 실행하세요.
+
+- [ ] 동의 없는 시작: 작업 전에 최초 승인 안내와 `desktop: off`. 자동 팝업/캡처/입력 없음.
+- [ ] `/desktop on` 취소: 설정 기록 없음, 제어 off.
+- [ ] `/desktop on` 승인: 앞으로의 로컬 세션 동의 설명, `autoEnable:true` 저장. 다른 사용자 설정 보존.
+- [ ] 재시작 또는 `/reload`: 재승인 없이 health/잠금 확인 후 on. 캡처/입력은 도구 요청 전까지 없음.
+- [ ] `/desktop off` → `/desktop on`: off 동안 재활성화 없음; 수동 재개에 추가 승인 없음.
+- [ ] `/desktop forget`: 즉시 off, `autoEnable:false`; 재시작도 off. 다시 on하면 최초 승인 요청.
+- [ ] 설정 저장 실패: 현재 세션만 허용한다는 명확한 경고. forget 실패도 현재 제어 중지, 남아 있을 수 있는 동의 경고.
+- [ ] 권한/Secure Input/잠금 문제 또는 텍스트 전용 모델: 시작 시 원인 안내, 준비됨으로 오인하지 않는 상태 표시.
+
+## 이전 검증 결과
 
 - 부모 재실행: TypeScript, Node 48/48, Swift helper/native self-test, fixture 컴파일, 패키징 dry-run 통과. 독립 코드 리뷰 통과.
 - 실제 Pi PTY 시작: Secure Input 원인 경고 → autoEnable=true여도 status=off 유지 → 정상 종료 확인. 모델 프롬프트·캡처·입력 0회.
@@ -47,4 +60,4 @@
 
 각 결과에 Mac/OS/scale/회전, 버전/revision, 기대값/실제값/오류를 **텍스트**로 기록하세요. 이미지는 Git에 넣지 말고 로컬 임시 파일이 있다면 시험 종료 후 삭제합니다. fixture는 메모리만 사용하고 copy/cut/paste와 외부 drop을 거부합니다. 클립보드 확인을 위해 도구로 읽거나 수정하지 않습니다. 피처가 앱별로 다르게 수신되면 있는 그대로 기록합니다.
 
-종료: `/desktop off` → `/quit` → fixture 창 닫기 또는 Quit Scratch (Cmd+Q). helper를 켠 채 다시 빌드하지 않습니다. 부모가 결과를 검토한 뒤에만 필요한 파일 commit/push/다른 Mac pull을 진행합니다.
+종료: `/desktop off` (현재 세션만 중지, 동의 기억) 또는 `/desktop forget` (시험 동의까지 철회) → `/quit` → fixture 창 닫기 또는 Quit Scratch (Cmd+Q). helper를 켠 채 다시 빌드하지 않습니다. 부모가 결과를 검토한 뒤에만 필요한 파일 commit/push/다른 Mac pull을 진행합니다.

@@ -5,7 +5,22 @@ build/
 .env
 .env.*
 !.env.example
+# Personal agent instructions/configuration and generated work plans (keep local)
+AGENTS.md
+AGENTS.override.md
+CLAUDE.md
+GEMINI.md
+.cursorrules
+.windsurfrules
 .pi/
+.agents/
+.claude/
+.codex/
+.cursor/
+.gemini/
+.github/copilot-instructions.md
+docs/superpowers/
+
 *.png
 *.jpg
 *.jpeg
