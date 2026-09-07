@@ -2,7 +2,7 @@
 
 Pi의 **현재 비전 모델이 화면을 보고 다음 동작을 고르는**, 작은 로컬 데스크톱 패키지입니다. 기존 computer-use 플러그인/Cua Driver를 사용하지 않습니다. 서버·VPS·별도 LLM·AX/DOM/OCR 탐색·앱별 단축키 전략·백그라운드 입력 우회가 없습니다.
 
-**macOS 14+ 전용, Node 24+, Xcode Command Line Tools 필요.** 개발 검증은 macOS arm64 / Swift 6.3.3 / Node 24.13.0 / Pi 0.85.1에서 수행했습니다. Intel 및 포괄적인 GUI 동작은 아직 수동 검증하지 않았으며, arm64에서 Aside 새 탭 클릭 1회는 확인했습니다. 회사 PC의 OS는 미확인입니다. Windows/Linux에서는 사용할 수 없습니다.
+**macOS 14+ 전용, Node 24+, Xcode Command Line Tools 필요.** 개발 검증은 macOS arm64 / Swift 6.3.3 / Node 24.13.0 / Pi 0.85.1에서 수행했습니다. Intel 및 포괄적인 GUI 동작은 아직 수동 검증하지 않았습니다. arm64에서 임시 Scratch 창의 확대·hover·세 종류 클릭·Unicode·양축 스크롤·드래그를 실제 확인했고, 화면 전환/앱 종료 후 캡처 문제도 재현했습니다. [최신 검증 기록](test/manual/2026-09-07-agent-feedback.md)에서 기존 GUI 결과와 새 후보의 무입력 테스트를 구분합니다. 회사 PC의 OS는 미확인입니다. Windows/Linux에서는 사용할 수 없습니다.
 
 ## 한 번 허용하면 다음부터 바로 사용
 
@@ -42,7 +42,7 @@ npm run health          # 권한 상태만 확인; 요청 팝업/설정 변경 �
 pi install "$PWD"       # 로컬 경로를 Pi에 등록 (파일 복사 아님)
 ```
 
-설치 시 자동 빌드는 없습니다. `npm run setup`은 `build/desktop-helper`를 만듭니다. 명령줄 개발 도구가 없으면 사용자가 먼저 설치해야 합니다. Pi 실행 중 helper를 다시 빌드하지 마세요.
+설치 시 자동 빌드는 없습니다. `npm run setup`은 `build/desktop-helper`를 만듭니다. 명령줄 개발 도구가 없으면 사용자가 먼저 설치해야 합니다. Pi 실행 중 helper를 다시 빌드하지 마세요. Swift 변경은 `/reload`만으로 반영되지 않습니다. Pi를 종료하고 `npm run setup && npm run test:native` 후 재시작하세요. 구형 helper에서 `settleMs`를 요청하면 입력을 보내기 전에 업데이트 필요를 안내합니다.
 
 시스템 설정 → 개인정보 보호 및 보안에서 **화면 기록(Screen Recording / Screen & System Audio Recording)**과 **손쉬운 사용(Accessibility)**을 로컬 터미널/실행 helper에 허용하고 Pi를 재시작하세요. macOS 버전에 따라 표시 대상/이름이 다릅니다. `health`의 두 권한이 `true`인지 확인하세요. 이 패키지는 권한을 요청하거나 우회하지 않습니다. Secure Input이 켜져 있으면 입력을 거부합니다. 암호 입력 등 해당 기능을 사용자가 종료한 뒤 다시 확인하세요. 권한이 있어도 MDM/보호된 콘텐츠/앱 정책에 의해 실제 동작은 제한될 수 있습니다.
 
@@ -58,7 +58,7 @@ pi install "$PWD"       # 로컬 경로를 Pi에 등록 (파일 복사 아님)
 
 ### 최초 동의를 기억하고 시작할 때 확인
 
-이제 **`/desktop on` 승인 자체가 자동 활성화 설정을 저장**합니다. JSON을 직접 편집할 필요가 없습니다. 초기 설치/동의 철회 상태에서는 시작 시 한 번 승인하라는 안내를 표시하고, 승인 팝업을 임의로 띄우지는 않습니다. 이후 시작에서는 권한·Secure Input·잠금 문제를 작업 전에 알립니다. 하단 상태는 `desktop: on`, `desktop: off`, 또는 비전 모델이 아닌 경우 `desktop: vision model required`로 표시됩니다. 상태는 명령/모델 전환/도구 결과 시 갱신하며 백그라운드 폴링하지 않습니다.
+이제 **`/desktop on` 승인 자체가 자동 활성화 설정을 저장**합니다. JSON을 직접 편집할 필요가 없습니다. 초기 설치/동의 철회 상태에서는 시작 시 한 번 승인하라는 안내를 표시하고, 승인 팝업을 임의로 띄우지는 않습니다. 이후 시작에서는 권한·Secure Input·잠금 문제를 작업 전에 알립니다. 하단 상태는 `desktop: on`, `desktop: off`, 또는 비전 모델이 아닌 경우 `desktop: vision model required`로 표시됩니다. 상태는 명령/모델 전환/도구 결과 시 갱신하며 백그라운드 폴링하지 않습니다. 로컬 TUI의 각 작업 시작(`before_agent_start`)에는 모델에도 현재 사용 가능/중지/차단 이유를 전달합니다. 이 문맥 전달은 제어를 켜거나 health·캡처·입력을 실행하지 않으며, 현재 화면 내용이나 작업 성공의 증거도 아닙니다.
 
 저장 대상은 **사용자 전역 설정** `~/.pi/agent/settings.json`의 아래 키입니다. 기존에 직접 설정한 `true`도 그대로 인정합니다. 수동 편집 시 파일 전체를 아래 내용으로 덮어쓰면 안 됩니다.
 
@@ -88,9 +88,9 @@ pi install "$PWD"       # 로컬 경로를 Pi에 등록 (파일 복사 아님)
 |---|---|
 | `desktop_observe {}` | 주 디스플레이 전체 PNG + timestamp, width/height, view, opaque ref |
 | `desktop_observe {zoom:{ref,x,y,width,height}, waitMs?}` | 최신 이미지의 영역을 **새로 고해상도 캡처** (중첩 가능), 선택적 명시 대기 |
-| `desktop_act` | 최신 ref로 원시 동작 하나 → 250ms settle → **전체 화면** PNG와 새 ref |
+| `desktop_act` | 최신 ref로 원시 동작 하나 → 명시적 `settleMs`(기본250ms) → **전체 화면** PNG와 새 ref |
 
-모든 act는 `ref`, `action` 및 **해당 동작에 필요한 필드만** 전달합니다:
+모든 act는 `ref`, `action`, 선택적 `settleMs` 및 **해당 동작에 필요한 필드만** 전달합니다:
 
 | action | 추가 필드 |
 |---|---|
@@ -125,7 +125,11 @@ pi install "$PWD"       # 로컬 경로를 Pi에 등록 (파일 복사 아님)
 
 `desktop_act {"ref":"최신 ref","action":"move","x":…,"y":…}`는 버튼 없이 커서만 한 번 이동합니다. hover 메뉴가 열리는 등 앱 반응은 가능하며 task success를 보장하지 않습니다. 항상 일반 act와 같은 preflight/취소/후속 전체 화면 규칙을 따릅니다.
 
-관찰에 `waitMs`(정수 0…2000, 기본 0)를 명시하면 캡처 전 그만큼만 기다립니다. 예: `desktop_observe {"waitMs":500}`. 확대와 함께 쓸 수도 있고 대기 시간도 원본 ref TTL에 포함됩니다. Esc/off로 취소할 수 있으며 자동 대기/재시도는 없습니다. 대기 중 취소하면 입력 없이 세션이 꺼집니다. 입력 후 고정 250ms settle은 변경하지 않았습니다.
+관찰에 `waitMs`(정수 0…2000, 기본 0)를 명시하면 캡처 전 그만큼만 기다립니다. 예: `desktop_observe {"waitMs":500}`. 확대와 함께 쓸 수도 있고 대기 시간도 원본 ref TTL에 포함됩니다. Esc/off로 취소할 수 있으며 자동 대기/재시도는 없습니다. 대기 중 취소하면 입력 없이 세션이 꺼집니다.
+
+입력에는 별도로 `settleMs`(정수 0…2000, 기본250)를 지정할 수 있습니다. 예: `{"ref":"최신 ref","action":"click","x":…,"y":…,"settleMs":800}`. 느린 UI 전환을 예상하면 대기를 늘린 뒤 **동작 하나의 후속 화면**을 받습니다. 메인 액터를 막지 않는 취소 가능한 대기이며, 입력 이벤트는 이미 해제된 상태입니다. 0은 화면 준비를 보장하지 않습니다. 기다려도 성공/안정 상태를 자동 판정하거나 입력을 재전송하지 않으며, 전송 후 취소는 여전히 unknown입니다. 반응을 더 기다려야 하면 입력을 반복하지 말고 `desktop_observe {"waitMs":…}`로 새 화면을 확인하세요.
+
+모델에는 긴 OS geometry 대신 반환 이미지 크기/픽셀 범위·전체/확대·전경 bundle·ref 만료 시각·입력 전송 여부와 **호출 소요 시간(큐 대기 포함)**을 짧게 전달합니다. 전체 geometry·캡처 시각·latency 수치는 결과 `details`에 유지합니다. 소요 시간은 모델 추론/네트워크 시간을 포함하지 않습니다.
 
 ref는 캡처 시작 시각부터 **120초**, 최신 한 장만 유효하며 한 번만 사용할 수 있습니다. 추론 지연을 허용하되 오래된 화면을 무기한 쓰지 않기 위한 상한입니다. 새 observe는 이전 ref를 대체합니다. 다른 세션의 ref, 사용한 ref, 만료된 ref, NaN/무한대/범위 밖 좌표는 거부합니다.
 
@@ -138,6 +142,7 @@ ref는 캡처 시작 시각부터 **120초**, 최신 한 장만 유효하며 한
 - helper는 고정 JSON 작업만 읽고 실행 파일/셸/네트워크 요청을 받지 않습니다. stdin 한 줄 ≤32KiB, 응답 ≤10.5MB, 요청 10초 제한. 취소/시간초과 시 SIGTERM 후 최대 2초 정리 시간을 주고 종료를 기다립니다.
 - 정상 취소는 이벤트 사이에서 감지하고 미리 준비한 key-up/button-up을 역순으로 보냅니다. 버튼/키를 잡은 상태에서 캡처를 기다리지 않습니다. OS 강제 종료(SIGKILL)·프로세스 크래시·하드웨어 실패까지 정리를 보장하지는 못합니다.
 - `dispatched:true`, `verified:false`는 **입력을 보냈다는 뜻이지 작업 성공이 아닙니다**. 픽셀 변화도 성공 증거가 아닙니다.
+- helper의 입력 전 거절(`not_dispatched`)은 입력이 없었다고 명시합니다. 새 observe 후 새 화면을 보고 판단할 수 있으며, 거절된 호출을 자동 반복하지 않습니다.
 - 전송 후 타임아웃/취소/캡처 실패는 **outcome unknown**, 재시도 없음, 데스크톱 제어 해제입니다. 부분 입력일 수 있으므로 사용자가 직접 확인한 뒤 `/desktop on`과 새 observe가 필요합니다. 입력 전 검사 거부도 해당 ref를 소비합니다.
 
 이 동의/잠금은 이 패키지의 정상 사용을 위한 장치이지 같은 사용자 권한의 악성 코드나 다른 Pi 셸 도구를 격리하는 샌드박스가 아닙니다. 신뢰하는 확장만 사용하세요.
@@ -198,7 +203,13 @@ npm run health         # 비프롬프팅 권한 상태만 조회
 
 자동 테스트는 전체/확대/중첩 좌표와 sourceRect/Retina/회전/소수 반올림, move 이벤트 구성(게시 없음), wait 취소·만료, 정확한 health 원인 안내, schema·named key 매핑, ref TTL/외부·소비, 세션 opt-in/reset, 직렬화, 잠금 충돌/해제/symlink, 이벤트 중단 시 release, 프로세스 timeout/crash/abort/출력 제한, Pi 이미지 전달/throw 오류를 검사합니다. CI도 캡처/입력을 실행하지 않습니다. **컴파일과 mock 통과는 실제 GUI 검증이 아닙니다.**
 
-### 동의 기억 UX 개발 변경 (2026-09-07)
+### 에이전트 사용성 후보 (2026-09-07)
+
+실제 등록 도구로 Scratch 기본 동작을 확인한 뒤, 전경 정보 지연과 앱 종료 후 unknown을 재현했습니다. stdin/입력 후 대기가 메인 액터를 막는 문제는 실패 테스트로 확인하고 비동기로 수정했습니다. `settleMs`, 짧은 결과/latency, 모델 사전 상태 안내, 입력 전 거절의 복구 설명을 추가했습니다. 권한·동의·ref·전경 검사와 unknown 시 중단은 유지합니다.
+
+검증: **Node 71/71**, TypeScript, 별도 후보 Swift 컴파일/무입력 self-test, 실제 Pi 확장 load-only 통과. 사용자 설치·재시작 후 실제 도구로 **Scratch 종료→후속 캡처를 기본250ms/명시800ms 각각 확인**했고, Unicode·드래그·스크롤과 모델 사전 상태 전달도 확인했습니다. 포괄적 GUI/TUI 인수 통과는 아닙니다. 클릭만으로 hover가 해제되지 않는 현상은800ms에서도 같고 명시적 move에서는 해제돼, 단순 대기 지연으로 해석하지 않습니다. 이 환경은 모니터3대지만 현재 캡처는 주 화면뿐입니다. 전역 전경 앱이 다른 화면에 있을 수 있으므로 화면에 보이지 않는 대상에 키 입력을 보내지 마세요. [상세 기준선·실기 결과·남은 인수 항목](test/manual/2026-09-07-agent-feedback.md)을 참고하세요.
+
+### 동의 기억 UX 개발 변경 (2026-09-07, 이전 기록)
 
 `/desktop on`의 최초 승인 기억, 재시작 자동 활성화, off 재개, forget 철회, 설정 보존/잠금 충돌/손상 거부, 저장 실패, 종료 중 경쟁 조건, 시작 시 차단·비전 모델 안내를 검증했습니다.
 
@@ -219,7 +230,7 @@ npm run health         # 비프롬프팅 권한 상태만 조회
 
 실제 Pi 0.85.1을 별도 PTY에서 실행한 결과, 사용자 설정 autoEnable=true여도 **Secure Input을 정확히 원인으로 안내하고 꺼진 상태를 유지**했으며 `/desktop status`에서 off를 확인한 뒤 정상 종료했습니다. 모델 프롬프트·화면 캡처·입력은 0회입니다. 이 결과는 실제 TUI 안전 차단/진단 검증이지 GUI 작업 성공이 아닙니다.
 
-**0.2.0 확대·hover·문자 입력·스크롤·드래그의 실제 동작은 아직 NOT RUN**입니다. 당시 테스트 Mac의 Screen Recording/Accessibility는 true였지만 Secure Input=true가 지속돼 GUI 테스트를 중단했습니다. fixture도 실행하지 않았습니다. 보호 입력을 사용자가 정상 종료한 뒤 아래 체크리스트로 확인하세요. 이전 버전의 클릭 성공 기록은 새 기능의 증거가 아닙니다.
+**이전 실행 시점에는 0.2.0 확대·hover·문자 입력·스크롤·드래그의 실제 동작이 NOT RUN**이었습니다. 이후 Scratch 기준선의 개별 결과는 위 최신 검증 기록에 별도로 남겼습니다. 당시 테스트 Mac의 Screen Recording/Accessibility는 true였지만 Secure Input=true가 지속돼 GUI 테스트를 중단했습니다. fixture도 실행하지 않았습니다. 보호 입력을 사용자가 정상 종료한 뒤 아래 체크리스트로 확인하세요. 이전 버전의 클릭 성공 기록은 새 기능의 증거가 아닙니다.
 
 수동 인수 실행 순서와 기록표: [test/manual/README.md](test/manual/README.md). `npm run build:fixture`는 `build/DesktopScratch.app`만 빌드하고 실행하지 않습니다. fixture는 저장/네트워크/클립보드 기능 없이 클릭 카운터·한글/emoji 편집·양축 스크롤·슬라이더 드래그·hover 색을 제공합니다. 창을 닫거나 Quit Scratch로 종료합니다.
 

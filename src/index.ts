@@ -78,6 +78,14 @@ export function registerDesktop(pi: ExtensionAPI, controller: DesktopController,
   });
   pi.on('session_shutdown', async (_event, ctx) => { await reset(); if (ctx.mode === 'tui' && ctx.hasUI) ctx.ui.setStatus('desktop', undefined); });
   pi.on('model_select', async (_event, ctx) => { status(ctx); });
+  pi.on('before_agent_start', async (_event, ctx) => {
+    if (platform !== 'darwin' || ctx.mode !== 'tui' || !ctx.hasUI) return;
+    const availability = !controller.isEnabled ? `off: ${unavailable}`
+      : !vision(ctx) ? 'blocked: select a vision-capable model before desktop work.'
+      : 'available. Use desktop_observe for fresh pixels before acting; no additional enable approval is needed.';
+    return { message: { customType: 'desktop-availability', display: false,
+      content: `Desktop ${availability} This is control status, not evidence of screen contents or task success. No capture/input performed by this status check.` } };
+  });
   pi.registerCommand('desktop', {
     description: 'Local desktop: on (remember) | off (pause) | forget (revoke) | status',
     handler: async (args, ctx) => {
@@ -152,18 +160,24 @@ export function registerDesktop(pi: ExtensionAPI, controller: DesktopController,
       if (ctx.mode !== 'tui' || !ctx.model?.input.includes('image')) throw new Error('Desktop requires local TUI and a vision-capable Pi model.');
       requireEnabled();
       try { return await controller.observe(params, signal); }
-      finally { status(ctx); }
+      catch (error) {
+        if (!controller.isEnabled) unavailable = error instanceof Error ? error.message : 'Observation failed; inspect desktop before reconnecting.';
+        throw error;
+      } finally { status(ctx); }
     },
   });
   pi.registerTool({
     name: 'desktop_act', label: 'Desktop act',
-    description: 'One foreground primitive then 250ms settle and full-screen screenshot; dispatched is NOT verified success. Use latest ref and integer pixels in that exact image (top-left 0,0). move is one no-button hover event with x,y only. Mouse actions require x,y; drag also toX,toY; scroll also dx,dy (pixels, positive right/down). type requires literal text, no clipboard. key requires a named physical key (e.g. return, tab, escape, left, a) and explicit modifiers array (may be empty); use type for literal Unicode, not key sequences. Only action-specific fields allowed. Never retry unknown outcomes.',
+    description: 'One foreground primitive then full-screen screenshot. Optional settleMs:0..2000 controls post-input wait (default250); use longer for known UI transitions, not input retries. Dispatched is NOT verified success. Use latest ref and integer pixels in that exact image (top-left 0,0). move is one no-button hover event with x,y only. Mouse actions require x,y; drag also toX,toY; scroll also dx,dy (pixels, positive right/down). type requires literal text, no clipboard. key requires a named physical key (e.g. return, tab, escape, left, a) and explicit modifiers array (may be empty); use type for literal Unicode, not key sequences. Only action-specific fields allowed. Never retry unknown outcomes.',
     parameters: actionSchema,
     async execute(_id, params, signal, _update, ctx) {
       if (ctx.mode !== 'tui' || !ctx.model?.input.includes('image')) throw new Error('Desktop requires local TUI and a vision-capable Pi model.');
       requireEnabled();
       try { return await controller.act(params, signal); }
-      finally { status(ctx); }
+      catch (error) {
+        if (!controller.isEnabled) unavailable = error instanceof Error ? error.message : 'Input outcome unknown; do not retry. Inspect desktop before reconnecting.';
+        throw error;
+      } finally { status(ctx); }
     },
   });
 }

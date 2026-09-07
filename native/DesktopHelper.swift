@@ -56,6 +56,7 @@ private struct Health: Codable {
 }
 private struct Reply: Codable {
     var ok: Bool
+    var capabilities: [String] = ["settleMs"]
     var error: String? = nil
     var outcome: String? = nil
     var health: Health? = nil
@@ -157,6 +158,9 @@ private let keyCodes: [String: UInt16] = [
     "home": 115, "end": 119, "page_up": 116, "page_down": 121, "delete": 117,
     "left": 123, "right": 124, "down": 125, "up": 126
 ]
+private func settleMilliseconds(_ a: [String: Any]) throws -> Int {
+    a.keys.contains("settleMs") ? Int(try number(a, "settleMs", 0, 2000)) : 250
+}
 private func buildPlan(_ a: [String: Any], _ s: Snapshot) throws -> [InputEvent] {
     guard let action = a["action"] as? String, let ref = a["ref"] as? String else { throw Failure(message: "Missing action or ref.") }
     let fields: [String: Set<String>] = [
@@ -165,7 +169,10 @@ private func buildPlan(_ a: [String: Any], _ s: Snapshot) throws -> [InputEvent]
         "type": ["text"], "key": ["key", "modifiers"]
     ]
     guard let required = fields[action] else { throw Failure(message: "Unknown action.") }
-    try require(Set(a.keys) == required.union(["op", "action", "ref"]) && ref == s.ref, "Invalid fields or screenshot ref.")
+    let mandatory = required.union(["op", "action", "ref"])
+    try require(mandatory.isSubset(of: Set(a.keys)) && Set(a.keys).isSubset(of: mandatory.union(["settleMs"])) && ref == s.ref,
+                "Invalid fields or screenshot ref.")
+    _ = try settleMilliseconds(a) // Validate before event construction and any input.
     var p = CGPoint.zero
     if required.contains("x") {
         p = point(try number(a, "x", 0, Double(s.width - 1)), try number(a, "y", 0, Double(s.height - 1)), s)
@@ -334,7 +341,7 @@ private func validateSnapshot(_ s: Snapshot, current: Geometry, now: Double) thr
                     let event = cleanup ? releases[spec.sequence]! : prepared[spec.sequence]
                     event.post(tap: .cghidEventTap)
                 }
-                try pause(250)
+                try await settle(settleMilliseconds(request))
                 return Reply(ok: true, outcome: "dispatched_not_verified", frame: try await capture())
             default: throw Failure(message: "Unknown operation.")
             }
@@ -365,25 +372,38 @@ private func acquireLock(path: String = "/tmp/pi-visual-desktop-\(getuid()).lock
     }
     return fd
 }
-private func readRequest() throws -> [String: Any]? {
+private func readRequestData(fd: Int32) throws -> Data? {
     var bytes: [UInt8] = []
     while interrupted == 0 {
-        var descriptor = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+        var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         let ready = poll(&descriptor, 1, 100)
         if ready < 0 { if errno == EINTR { continue }; throw Failure(message: "Input read failed.") }
         if ready == 0 { continue }
         var byte: UInt8 = 0
-        let count = read(STDIN_FILENO, &byte, 1)
+        let count = read(fd, &byte, 1)
         if count == 0 { return nil }
         if count < 0 { if errno == EINTR { continue }; throw Failure(message: "Input read failed.") }
-        if byte == 10 {
-            guard let request = try? JSONSerialization.jsonObject(with: Data(bytes)) as? [String: Any] else { throw Failure(message: "Invalid JSON request.") }
-            return request
-        }
+        if byte == 10 { return Data(bytes) }
         bytes.append(byte)
         try require(bytes.count <= 32_767, "JSON request exceeds 32768-byte line limit.")
     }
     return nil
+}
+
+// Never block the main actor while idle: NSWorkspace foreground notifications must drain.
+@MainActor private func nextRequest(fd: Int32 = STDIN_FILENO) async throws -> [String: Any]? {
+    guard let data = try await Task.detached(operation: { try readRequestData(fd: fd) }).value else { return nil }
+    // Only Sendable Data crosses the worker boundary; parse dynamic JSON on the actor.
+    guard let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Failure(message: "Invalid JSON request.") }
+    return request
+}
+// Input has been released before settling. Yield so app/foreground changes can be observed.
+@MainActor private func settle(_ milliseconds: Int) async throws {
+    try checkCancellation()
+    for start in stride(from: 0, to: milliseconds, by: 10) {
+        try await Task.sleep(nanoseconds: UInt64(min(10, milliseconds - start)) * 1_000_000)
+        try checkCancellation()
+    }
 }
 
 @main private struct Main {
@@ -393,8 +413,8 @@ private func readRequest() throws -> [String: Any]? {
         signal(SIGPIPE, SIG_IGN)
         if CommandLine.arguments == [CommandLine.arguments[0], "--health"] { send(Reply(ok: true, health: health())); return }
         if CommandLine.arguments == [CommandLine.arguments[0], "--self-test"] {
-            do { try selfTest(); print("Native state-machine/coordinate/preflight/lock tests passed; no capture or input.") }
-            catch { print("Native self-test failed."); exit(1) }
+            do { try selfTest(); try await responsivenessTest(); print("Native state-machine/coordinate/preflight/lock/responsiveness tests passed; no capture or input.") }
+            catch { print("Native self-test failed: \((error as? Failure)?.message ?? "Test failed")"); exit(1) }
             return
         }
         guard CommandLine.arguments.count == 1 else { send(Reply(ok: false, error: "Unsupported helper argument.")); return }
@@ -402,12 +422,53 @@ private func readRequest() throws -> [String: Any]? {
             let fd = try acquireLock()
             defer { close(fd) }
             let desktop = Desktop()
-            while let request = try readRequest() {
+            while let request = try await nextRequest() {
                 send(await desktop.handle(request))
                 if interrupted != 0 { break }
             }
         } catch { send(Reply(ok: false, error: (error as? Failure)?.message ?? "Helper failed.", outcome: "not_dispatched")) }
     }
+}
+
+// Test only: a pipe writer prevents hangs even when the main actor is blocked.
+@MainActor private func responsivenessTest() async throws {
+    let pipe = Pipe()
+    defer { try? pipe.fileHandleForReading.close(); try? pipe.fileHandleForWriting.close() }
+    var readTick = false
+    let readerTick = Task { @MainActor in
+        try await Task.sleep(nanoseconds: 10_000_000)
+        readTick = true
+    }
+    let writer = pipe.fileHandleForWriting
+    DispatchQueue.global().async {
+        usleep(100_000)
+        writer.write(Data("{\"op\":\"health\"}\n".utf8))
+    }
+    let reply = try await nextRequest(fd: pipe.fileHandleForReading.fileDescriptor)
+    let responsiveRead = readTick
+    try await readerTick.value
+    var settleTick = false
+    let waiterTick = Task { @MainActor in
+        try await Task.sleep(nanoseconds: 10_000_000)
+        settleTick = true
+    }
+    try await settle(80)
+    let responsiveSettle = settleTick
+    try await waiterTick.value
+    try require(reply?["op"] as? String == "health", "Async reader corrupted request")
+    try require(responsiveRead && responsiveSettle,
+                "Main actor blocked: stdin=\(!responsiveRead), post-input settle=\(!responsiveSettle)")
+    let cancelledWait = Task { @MainActor in try await settle(2000) }
+    await Task.yield()
+    cancelledWait.cancel()
+    var taskCancelled = false
+    do { try await cancelledWait.value } catch is CancellationError { taskCancelled = true }
+    try require(taskCancelled, "Async settle must honor task cancellation")
+    interrupted = 1
+    defer { interrupted = 0 }
+    var signalCancelled = false
+    do { try await settle(0) } catch { signalCancelled = true }
+    try require(signalCancelled, "Even zero settle must honor termination signal")
 }
 
 private func expectRejected(_ body: () throws -> Void) throws {
@@ -489,6 +550,15 @@ private func selfTest() throws {
             ["ref": full.ref, "x": 0, "y": 0, "width": 0, "height": 1],
             ["ref": full.ref, "x": 0, "y": 0, "width": 1, "height": 1, "extra": true]
         ] { try expectRejected { _ = try zoomView(z, full) } }
+    }
+    try require(try settleMilliseconds([:]) == 250, "Default post-input settle")
+    for milliseconds in [0, 250, 800, 2000] {
+        try require(try settleMilliseconds(["settleMs": milliseconds]) == milliseconds, "Explicit post-input settle")
+        let adjusted = try plan(["op": "act", "action": "click", "ref": s.ref, "x": 0, "y": 0, "settleMs": milliseconds], s)
+        try require(adjusted.count == 2 && adjusted.first?.kind == "leftDown", "Settle must not add input events")
+    }
+    for bad: Any in [-1, 2001, 0.5, true, "500", NSNull()] {
+        try expectRejected { _ = try plan(["op": "act", "action": "click", "ref": s.ref, "x": 0, "y": 0, "settleMs": bad], s) }
     }
     let move = try plan(["op": "act", "action": "move", "ref": s.ref, "x": 4, "y": 9], s)
     try require(move.count == 1 && move[0].kind == "move" && move[0].point == point(4, 9, s) &&

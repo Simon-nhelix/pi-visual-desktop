@@ -21,7 +21,7 @@ function harness(platform: NodeJS.Platform = 'darwin', loadAutoEnable?: () => Pr
   const transport = new MockTransport();
   const controller = new DesktopController(() => transport, () => NOW);
   const tools = new Map<string, ToolDefinition>();
-  const events = new Map<string, () => Promise<void>>();
+  const events = new Map<string, () => Promise<unknown>>();
   let command!: RegisteredCommand;
   const notifications: string[] = [], prompts: string[] = [];
   const statuses = new Map<string, string | undefined>();
@@ -33,7 +33,7 @@ function harness(platform: NodeJS.Platform = 'darwin', loadAutoEnable?: () => Pr
   } as unknown as ExtensionCommandContext;
   const pi = { registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
     registerCommand: (_name: string, definition: RegisteredCommand) => { command = definition; },
-    on: (name: string, handler: (event: unknown, context: ExtensionCommandContext) => Promise<void>) =>
+    on: (name: string, handler: (event: unknown, context: ExtensionCommandContext) => Promise<unknown>) =>
       events.set(name, () => handler({ reason: 'startup' }, ctx)),
   } as unknown as ExtensionAPI;
   registerDesktop(pi, controller, platform, loadAutoEnable ?? (async () => remembered), save);
@@ -254,6 +254,30 @@ test('Pi adapter: observe zoom/wait and move traverse real tool wrapper with ima
   await h.command('off');
 });
 
+
+test('Pi adapter: model receives current availability before work without new health/capture/input', async () => {
+  const h = harness('darwin', async () => true);
+  const preTurn = async () => {
+    const result = await h.events.get('before_agent_start')?.() as { message?: { content: string; display: boolean } } | undefined;
+    assert.ok(result?.message, 'availability must reach the model, not just the footer');
+    assert.equal(result.message.display, false);
+    return result.message.content;
+  };
+  await h.events.get('session_start')!();
+  assert.match(await preTurn(), /available.*desktop_observe/s);
+  assert.deepEqual(h.transport.calls, [{ op: 'health' }]);
+  await h.command('off');
+  assert.match(await preTurn(), /off.*Paused by user/s);
+  assert.deepEqual(h.transport.calls, [{ op: 'health' }]);
+  await h.command('on');
+  const observed = await h.tools.get('desktop_observe')!.execute('id', {}, undefined, undefined, h.ctx);
+  h.transport.handle = async () => { throw new Error('input timeout'); };
+  await assert.rejects(h.tools.get('desktop_act')!.execute('id', { ref: (observed.details as {ref: string}).ref,
+    action: 'click', x: 0, y: 0 }, undefined, undefined, h.ctx), /outcome unknown/);
+  assert.match(await preTurn(), /outcome unknown.*Do NOT retry/s);
+  const blocked = harness(); blocked.ctx.mode = 'rpc';
+  assert.equal(await blocked.events.get('before_agent_start')?.(), undefined);
+});
 
 test('Pi adapter: first approval explains persistence and fresh adapter restores saved consent health-only', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'desktop-adapter-consent-'));

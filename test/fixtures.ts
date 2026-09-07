@@ -11,7 +11,7 @@ export class MockTransport implements Transport {
   calls: Record<string, unknown>[] = [];
   closed = false;
   handle: (request: Record<string, unknown>, signal?: AbortSignal) => Promise<Reply> = async request =>
-    request.op === 'health' ? { ok: true, health: { screenRecording: true, accessibility: true, secureInput: false } } : { ok: true, frame: frame() };
+    request.op === 'health' ? { ok: true, capabilities: ['settleMs'], health: { screenRecording: true, accessibility: true, secureInput: false } } : { ok: true, frame: frame() };
   async request(request: Record<string, unknown>, signal?: AbortSignal) {
     this.calls.push(request);
     return this.handle(request, signal);

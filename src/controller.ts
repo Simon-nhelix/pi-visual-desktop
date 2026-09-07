@@ -1,12 +1,21 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { REF_TTL_MS, validateAction, validateFrame, validateObserve, zoomView, type Frame, type CaptureView, type Geometry, type Health, type Transport } from './protocol.ts';
 
-export function imageResult(frame: Frame, dispatched: boolean) {
+interface Timing { totalMs: number; queueMs: number }
+export function imageResult(frame: Frame, dispatched: boolean, timing: Timing = { totalMs: 0, queueMs: 0 }) {
   const { png: _png, ...snapshot } = frame;
+  const full = frame.view.x === 0 && frame.view.y === 0 && frame.view.width === frame.geometry.width && frame.view.height === frame.geometry.height;
   const details = { ...snapshot, timestamp: new Date(frame.capturedAt).toISOString(),
+    expiresAt: new Date(frame.capturedAt + REF_TTL_MS).toISOString(), timing,
     dispatched, verified: false as const, outcome: dispatched ? 'dispatched_not_verified' : 'observed' };
+  // Full OS geometry remains in details; the model needs the returned image's coordinates, not Retina math.
+  const text = `${frame.width}x${frame.height} ${full ? 'full display' : 'zoom'} | app=${JSON.stringify(frame.geometry.bundle)}\n` +
+    `ref=${frame.ref} | expires=${details.expiresAt}\n` +
+    `Use these image pixels (0..${frame.width - 1}, 0..${frame.height - 1}); latest ref, one use. ` +
+    `${dispatched ? 'Input sent; task not verified. Inspect image before next action.' : 'Observed; no input sent.'}\n` +
+    `Elapsed ${timing.totalMs}ms (queue ${timing.queueMs}ms).`;
   return { content: [
-    { type: 'text' as const, text: JSON.stringify(details) },
+    { type: 'text' as const, text },
     { type: 'image' as const, mimeType: 'image/png' as const, data: frame.png },
   ], details };
 }
@@ -18,10 +27,16 @@ export class DesktopController {
   private generation = 0;
   private activeAbort?: AbortController;
   private enabled = false;
+  private customSettle = false;
   private createTransport: () => Transport;
   private now: () => number;
-  constructor(createTransport: () => Transport, now = Date.now) {
-    this.createTransport = createTransport; this.now = now;
+  private monotonic: () => number;
+  constructor(createTransport: () => Transport, now = Date.now, monotonic = () => performance.now()) {
+    this.createTransport = createTransport; this.now = now; this.monotonic = monotonic;
+  }
+  private timing(requestedAt: number, startedAt: number): Timing {
+    return { totalMs: Math.round(Math.max(0, this.monotonic() - requestedAt)),
+      queueMs: Math.round(Math.max(0, startedAt - requestedAt)) };
   }
   get isEnabled() { return this.enabled; }
   private serial<T>(fn: () => Promise<T>): Promise<T> {
@@ -48,6 +63,7 @@ export class DesktopController {
         if (missing.length) blockers.push(`Missing permission: ${missing.join(' and ')}. Enable manually in System Settings > Privacy & Security, then restart Pi. No permission prompt was requested.`);
         if (blockers.length) throw new Error(`Desktop unavailable: ${blockers.join(' ')}`);
         if (generation !== this.generation) throw new Error('Desktop enable cancelled.');
+        this.customSettle = Array.isArray(reply.capabilities) && reply.capabilities.includes('settleMs');
         this.enabled = true;
         return health;
       } catch (error) { await transport.close(); this.transport = undefined; throw error; }
@@ -76,7 +92,9 @@ export class DesktopController {
     });
   }
   observe(input: unknown = {}, signal?: AbortSignal) {
+    const requestedAt = this.monotonic();
     return this.operation(signal, async (t, s) => {
+      const startedAt = this.monotonic();
       validateObserve(input);
       const source = this.latest;
       let view: CaptureView | undefined;
@@ -104,7 +122,7 @@ export class DesktopController {
         if (!view) this.requireFullView(reply.frame);
         const { png: _png, ...metadata } = reply.frame;
         this.latest = metadata;
-        return imageResult(reply.frame, false);
+        return imageResult(reply.frame, false, this.timing(requestedAt, startedAt));
       } catch (error) {
         if (error instanceof NotDispatched) throw error;
         this.enabled = false;
@@ -124,16 +142,19 @@ export class DesktopController {
     if (v.x !== 0 || v.y !== 0 || v.width !== g.width || v.height !== g.height) throw new Error('Expected full-display capture view.');
   }
   act(input: unknown, signal?: AbortSignal) {
+    const requestedAt = this.monotonic();
     return this.operation(signal, async (t, s) => {
+      const startedAt = this.monotonic();
       const frame = this.latest;
       if (!frame) throw new Error('No fresh screenshot ref. Observe first.');
       validateAction(input, frame.width, frame.height);
+      if ('settleMs' in input && !this.customSettle) throw new Error('Native helper needs an update for settleMs. No input was sent. End the Pi session, run npm run setup in the plugin directory, then restart; do not repeat with the unsupported field.');
       this.requireFresh(frame, input.ref);
       this.latest = undefined; // Consume before any dispatch, including uncertain failures.
       try {
         const reply = await t.request({ op: 'act', ...input }, s);
         if (!reply.ok) {
-          if (reply.outcome === 'not_dispatched') throw new NotDispatched(reply.error ?? 'Desktop preflight rejected action.');
+          if (reply.outcome === 'not_dispatched') throw new NotDispatched(`${reply.error ?? 'Desktop preflight rejected action.'} No input was sent. Observe a fresh frame, then decide a new action; do not reuse the old ref.`);
           throw new Error('Helper reported an uncertain action.');
         }
         s.throwIfAborted();
@@ -143,7 +164,7 @@ export class DesktopController {
         if (reply.frame.ref === frame.ref) throw new Error('Helper reused screenshot ref.');
         const { png: _png, ...metadata } = reply.frame;
         this.latest = metadata;
-        return imageResult(reply.frame, true);
+        return imageResult(reply.frame, true, this.timing(requestedAt, startedAt));
       } catch (error) {
         if (error instanceof NotDispatched) throw error;
         // Unknown outcomes require explicit user re-enable, not another model input attempt.

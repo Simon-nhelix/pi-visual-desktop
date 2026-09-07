@@ -26,6 +26,7 @@ export interface CaptureView { x: number; y: number; width: number; height: numb
 export const actionSchema = Type.Object({
   ref: Type.String({ minLength: 1, maxLength: 80 }),
   action: StringEnum(['move', 'click', 'double_click', 'right_click', 'scroll', 'drag', 'type', 'key']),
+  settleMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 2000, description: 'Explicit delay after input, before screenshot; default 250ms. Not a task-success check.' })),
   x: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_EDGE - 1 })),
   y: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_EDGE - 1 })),
   toX: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_EDGE - 1 })),
@@ -47,7 +48,7 @@ export interface Frame {
   geometry: Geometry; view: CaptureView; png: string;
 }
 export interface Health { screenRecording: boolean; accessibility: boolean; secureInput: boolean }
-export interface Reply { ok: boolean; error?: string; outcome?: string; health?: Health; frame?: Frame }
+export interface Reply { ok: boolean; error?: string; outcome?: string; health?: Health; frame?: Frame; capabilities?: string[] }
 export interface Transport {
   request(request: Record<string, unknown>, signal?: AbortSignal): Promise<Reply>;
   close(): Promise<void>;
@@ -66,7 +67,8 @@ export function validateAction(value: unknown, width: number, height: number): a
   const a = value as Record<string, unknown>;
   if (typeof a.ref !== 'string' || !a.ref.length || a.ref.length > 80 || typeof a.action !== 'string' || !Object.hasOwn(fields, a.action)) return fail();
   const required = fields[a.action as Action['action']];
-  if (Object.keys(a).some(k => !['ref', 'action', ...required].includes(k)) || required.some(k => !(k in a))) return fail();
+  if (Object.keys(a).some(k => !['ref', 'action', 'settleMs', ...required].includes(k)) || required.some(k => !(k in a))) return fail();
+  if ('settleMs' in a && !integer(a.settleMs, 0, 2000)) return fail();
   for (const k of ['x', 'toX']) if (k in a && !integer(a[k], 0, width - 1)) return fail();
   for (const k of ['y', 'toY']) if (k in a && !integer(a[k], 0, height - 1)) return fail();
   for (const k of ['dx', 'dy']) if (k in a && !integer(a[k], -1000, 1000)) return fail();
